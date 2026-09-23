@@ -1,10 +1,12 @@
 services:
   - type: web
     name: konkonsa-api
-    runtime: docker
-    dockerfilePath: ./Dockerfile
+    runtime: python
+    rootDir: api
+    buildCommand: pip install -r requirements.txt
+    preDeployCommand: alembic upgrade head
+    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
     healthCheckPath: /healthz
-    preDeployCommand: ./api/release.sh
     envVars:
       - key: DATABASE_URL
         sync: false
@@ -31,9 +33,10 @@ services:
 
   - type: worker
     name: konkonsa-worker
-    runtime: docker
-    dockerfilePath: ./Dockerfile
-    dockerCommand: alembic upgrade head && python worker.py
+    runtime: python
+    rootDir: api
+    buildCommand: pip install -r requirements.txt
+    startCommand: alembic upgrade head && python worker.py
     envVars:
       - key: DATABASE_URL
         sync: false
