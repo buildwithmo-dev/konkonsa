@@ -1,12 +1,10 @@
-"""Database configuration for local development and Supabase/Postgres production."""
-from __future__ import annotations
+"""Database engine, session management, and schema initialization."""
 
+import asyncio
 import os
-from collections.abc import AsyncGenerator
+from pathlib import Path
 
-from sqlalchemy import text
-from sqlalchemy.engine import make_url
-from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker, create_async_engine
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase
 
 
@@ -15,58 +13,63 @@ class Base(DeclarativeBase):
 
 
 def _database_url() -> str:
-    """Return an async SQLAlchemy URL.
+    """Return an async SQLAlchemy URL, with a stable local SQLite default.
 
-    Supabase/Render normally expose DATABASE_URL as a standard postgres:// URL.
-    SQLAlchemy's async engine needs the asyncpg dialect, so normalize it here.
+    The API is async, so a plain ``sqlite:///...`` URL must be upgraded to
+    the aiosqlite driver.  The default path is anchored to this package rather
+    than the process working directory, which can differ on Render/containers.
     """
-    raw = os.getenv("DATABASE_URL", "sqlite+aiosqlite:///./trentradar.db").strip()
-    if raw.startswith("postgres://"):
-        return "postgresql+asyncpg://" + raw[len("postgres://") :]
-    if raw.startswith("postgresql://"):
-        return "postgresql+asyncpg://" + raw[len("postgresql://") :]
-    if raw.startswith("postgresql+psycopg://"):
-        return "postgresql+asyncpg://" + raw[len("postgresql+psycopg://") :]
-    return raw
+    configured = os.getenv("DATABASE_URL")
+    if not configured:
+        db_path = Path(__file__).resolve().parent / "trentradar.db"
+        return f"sqlite+aiosqlite:///{db_path}"
+
+    if configured.startswith("sqlite://") and not configured.startswith("sqlite+aiosqlite://"):
+        configured = "sqlite+aiosqlite://" + configured[len("sqlite://") :]
+
+    return configured
 
 
 DATABASE_URL = _database_url()
-
-engine_kwargs: dict = {"echo": os.getenv("SQL_ECHO", "false").lower() == "true"}
-if DATABASE_URL.startswith("postgresql+asyncpg://"):
-    # Supabase recommends pooled connections for application traffic.  Keep the
-    # pool bounded so a Render deploy cannot exhaust Postgres connections.
-    engine_kwargs.update(
-        pool_pre_ping=True,
-        pool_size=int(os.getenv("DB_POOL_SIZE", "5")),
-        max_overflow=int(os.getenv("DB_MAX_OVERFLOW", "5")),
-        pool_recycle=int(os.getenv("DB_POOL_RECYCLE_SECONDS", "1800")),
-    )
-else:
-    engine_kwargs["connect_args"] = {"check_same_thread": False}
-
-engine: AsyncEngine = create_async_engine(DATABASE_URL, **engine_kwargs)
+engine = create_async_engine(DATABASE_URL, echo=False)
 AsyncSessionLocal = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
 
-
-async def get_db() -> AsyncGenerator[AsyncSession, None]:
-    async with AsyncSessionLocal() as session:
-        yield session
-
-
-async def check_db() -> None:
-    async with engine.connect() as conn:
-        await conn.execute(text("SELECT 1"))
+_schema_lock = asyncio.Lock()
+_schema_ready = False
 
 
 async def init_db() -> None:
-    """Local/test convenience only.
+    """Create any missing tables before the application starts serving traffic.
 
-    Production schema changes are applied by Alembic during deployment. Keeping
-    create_all out of the production startup path prevents schema drift and
-    destructive surprises when multiple Render instances boot together.
+    Models are imported here deliberately so ``Base.metadata`` is populated
+    even if this module is used independently of ``main.py``.
     """
-    if os.getenv("AUTO_CREATE_TABLES", "false").lower() != "true":
-        return
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
+    global _schema_ready
+
+    async with _schema_lock:
+        if _schema_ready:
+            return
+
+        import models  # noqa: F401  # register ORM models with Base.metadata
+
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+
+        _schema_ready = True
+
+
+async def get_db():
+    """Yield a session, ensuring the schema exists for every worker/process.
+
+    This is intentionally defensive: ASGI lifespan startup is expected to run,
+    but some deployment/test harnesses can create requests without invoking
+    lifespan events.  A single locked ``create_all`` check prevents a request
+    from reaching an uninitialized SQLite database in that case.
+    """
+    await init_db()
+
+    async with AsyncSessionLocal() as session:
+        try:
+            yield session
+        finally:
+            await session.close()
