@@ -18,7 +18,6 @@ from routers.misc import search_router, clusters_router, alerts_router, jobs_rou
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    await init_db()
     yield
 
 
