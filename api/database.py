@@ -1,5 +1,4 @@
 import os
-
 from dotenv import load_dotenv
 from sqlalchemy.ext.asyncio import (
     AsyncSession,
@@ -7,6 +6,7 @@ from sqlalchemy.ext.asyncio import (
     create_async_engine,
 )
 from sqlalchemy.orm import DeclarativeBase
+from sqlalchemy import text  # Add this import
 
 load_dotenv()
 
@@ -18,10 +18,6 @@ if not DATABASE_URL:
         "Set it to your Supabase PostgreSQL connection string."
     )
 
-# Supabase provides PostgreSQL URLs such as:
-# postgresql://...
-#
-# SQLAlchemy async requires the asyncpg driver.
 if DATABASE_URL.startswith("postgresql://"):
     DATABASE_URL = DATABASE_URL.replace(
         "postgresql://",
@@ -41,10 +37,8 @@ AsyncSessionLocal = async_sessionmaker(
     expire_on_commit=False,
 )
 
-
 class Base(DeclarativeBase):
     pass
-
 
 async def get_db():
     async with AsyncSessionLocal() as session:
@@ -56,10 +50,12 @@ async def get_db():
         finally:
             await session.close()
 
-
 async def init_db():
-    # Temporary bootstrap.
-    # Once the Supabase schema/migrations are established,
-    # production should use Alembic migrations instead.
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+
+# Add this missing function
+async def check_db():
+    """Ping the database to verify the connection is active."""
+    async with engine.begin() as conn:
+        await conn.execute(text("SELECT 1"))
