@@ -12,7 +12,8 @@ pytrends>=4.9.2            # Google Trends
 sentence-transformers>=3.0.0
 scikit-learn>=1.5.0
 redis>=5.0.0
-
+feedparser
+httpx
 alembic>=1.16.0
 PyJWT[crypto]>=2.10.0
 psycopg[binary]>=3.2.0
