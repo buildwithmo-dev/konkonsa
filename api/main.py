@@ -5,14 +5,12 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from database import init_db
-
 from routers.sources import router as sources_router
 from routers.feed import router as feed_router
 from routers.classify import router as classify_router
 from routers.trends import router as trends_router
 from routers.painpoints import router as painpoints_router
 from routers.solutions import router as solutions_router
-
 from routers.misc import (
     search_router,
     clusters_router,
@@ -41,16 +39,21 @@ frontend_url = os.getenv(
     "https://konkonsa-frontend-lwf8.vercel.app",
 ).rstrip("/")
 
+cors_origins = [
+    origin.strip()
+    for origin in os.getenv("CORS_ORIGINS", frontend_url).split(",")
+    if origin.strip()
+]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=cors_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
 
-# Register application routers
 app.include_router(sources_router)
 app.include_router(feed_router)
 app.include_router(classify_router)
@@ -72,5 +75,10 @@ async def root():
         "name": "Konkonsa API",
         "docs": "/docs",
         "redoc": "/redoc",
-        "health": "/settings/health",
+        "health": "/healthz",
     }
+
+
+@app.get("/healthz", tags=["Health"])
+async def healthz():
+    return {"status": "ok"}

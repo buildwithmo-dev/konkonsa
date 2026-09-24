@@ -5,7 +5,7 @@ from apscheduler.triggers.interval import IntervalTrigger
 from sqlalchemy import select
 
 from database import AsyncSessionLocal
-from models import Job, JobLog, JobStatus
+from models import Job, JobLog, JobStatus, Source, SourceType
 
 logger = logging.getLogger("scheduler")
 
@@ -84,15 +84,15 @@ async def job_ingest_google_trends():
     return await fetch_all_configured_trends_sources()
 
 
+async def job_ingest_x():
+    from services.x import fetch_all_configured_x_sources
+    return await fetch_all_configured_x_sources()
+
+
 async def job_classify_unprocessed():
     """Classify all feed items that don't have a classification yet."""
     from services.classify_pipeline import classify_pending_items
     return await classify_pending_items()
-
-
-async def job_refresh_insights():
-    from services.insights import refresh_insights
-    return await refresh_insights()
 
 
 async def job_recluster():
@@ -143,19 +143,19 @@ def setup_scheduler():
     )
 
     scheduler.add_job(
-        lambda: _run_job("classify_unprocessed", job_classify_unprocessed),
-        trigger=IntervalTrigger(minutes=15),
-        id="classify_unprocessed",
-        name="Classify Unprocessed Items",
+        lambda: _run_job("ingest_x", job_ingest_x),
+        trigger=IntervalTrigger(minutes=30),
+        id="ingest_x",
+        name="Ingest X",
         replace_existing=True,
         max_instances=1,
     )
 
     scheduler.add_job(
-        lambda: _run_job("refresh_insights", job_refresh_insights),
+        lambda: _run_job("classify_unprocessed", job_classify_unprocessed),
         trigger=IntervalTrigger(minutes=15),
-        id="refresh_insights",
-        name="Refresh Trends and Pain Points",
+        id="classify_unprocessed",
+        name="Classify Unprocessed Items",
         replace_existing=True,
         max_instances=1,
     )
@@ -181,31 +181,55 @@ def setup_scheduler():
     return scheduler
 
 
-async def seed_default_sources():
-    """Create the built-in live data sources on a fresh database."""
-    from models import Source, SourceType
-    defaults = [
-        ("Reddit", SourceType.reddit, {"subreddits": ["problems", "startupideas", "entrepreneur", "technology"], "mode": "hot", "limit": 50}, 30),
-        ("Hacker News", SourceType.hackernews, {"query": "", "tags": "story", "hours_back": 24, "max_results": 50}, 60),
-        ("Google Trends", SourceType.google_trends, {}, 360),
-    ]
+async def ensure_default_x_source():
+    """Create the default X source when an X bearer token is configured."""
+    from services.x import DEFAULT_QUERY, get_x_bearer_token
+
+    try:
+        get_x_bearer_token()
+    except RuntimeError:
+        logger.info("X bearer token not configured; skipping default X source.")
+        return
+
     async with AsyncSessionLocal() as db:
-        existing = {row.name for row in (await db.execute(select(Source))).scalars().all()}
-        for name, source_type, config, interval in defaults:
-            if name not in existing:
-                db.add(Source(name=name, type=source_type, config=config, fetch_interval_minutes=interval, is_active=True))
+        result = await db.execute(
+            select(Source).where(
+                Source.type == SourceType.twitter,
+                Source.name == "X",
+            )
+        )
+        if result.scalar_one_or_none():
+            return
+
+        db.add(
+            Source(
+                name="X",
+                type=SourceType.twitter,
+                config={
+                    "query": DEFAULT_QUERY,
+                    "max_results": 50,
+                    "max_pages": 1,
+                },
+                is_active=True,
+                fetch_interval_minutes=30,
+            )
+        )
         await db.commit()
+        logger.info("Created default X source.")
+
 
 async def seed_job_records():
-    """Ensure Job rows exist in the DB for all registered jobs."""
+    """Ensure Job and default source rows exist for registered jobs."""
+    await ensure_default_x_source()
+
     job_definitions = [
-        ("ingest_reddit",       "Fetch new posts from configured subreddits",        30),
-        ("ingest_hackernews",   "Fetch Ask HN, Show HN, and keyword results",         60),
-        ("ingest_google_trends","Fetch trending searches and keyword interest",        360),
-        ("classify_unprocessed","Classify raw feed items via Claude API",              15),
-        ("refresh_insights",    "Materialize trends and pain points from classifications", 15),
-        ("recluster",           "Re-run DBSCAN clustering on all embeddings",          720),
-        ("check_alerts",        "Evaluate alert conditions and trigger notifications", 10),
+        ("ingest_reddit",        "Fetch new posts from configured subreddits",         30),
+        ("ingest_hackernews",    "Fetch Ask HN, Show HN, and keyword results",          60),
+        ("ingest_google_trends", "Fetch trending searches and keyword interest",        360),
+        ("ingest_x",             "Fetch recent X posts for configured search queries",  30),
+        ("classify_unprocessed", "Classify raw feed items via Claude API",              15),
+        ("recluster",            "Re-run DBSCAN clustering on all embeddings",          720),
+        ("check_alerts",         "Evaluate alert conditions and trigger notifications", 10),
     ]
 
     async with AsyncSessionLocal() as db:
@@ -223,17 +247,17 @@ async def seed_job_records():
 async def run_all_tasks_now():
     """Manual trigger for all active scrapers and classification pipeline."""
     import asyncio
-    print("🚀 MANUAL TRIGGER: Starting all background tasks...")
-    
-    # Run ingestion jobs concurrently
+
+    logger.info("MANUAL TRIGGER: Starting all background tasks...")
+
     await asyncio.gather(
         _run_job("ingest_reddit", job_ingest_reddit),
         _run_job("ingest_hackernews", job_ingest_hn),
-        _run_job("ingest_google_trends", job_ingest_google_trends)
+        _run_job("ingest_google_trends", job_ingest_google_trends),
+        _run_job("ingest_x", job_ingest_x),
     )
-    
-    # Run classification after ingestion finishes
-    print("🧠 Starting classification pipeline...")
+
+    logger.info("Starting classification pipeline...")
     await _run_job("classify_unprocessed", job_classify_unprocessed)
-    
-    print("✅ All manual tasks complete.")
+
+    logger.info("All manual tasks complete.")

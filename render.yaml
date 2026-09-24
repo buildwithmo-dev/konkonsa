@@ -4,7 +4,7 @@ services:
     runtime: python
     buildCommand: pip install -r api/requirements.txt
     startCommand: cd api && uvicorn main:app --host 0.0.0.0 --port $PORT
-    healthCheckPath: /settings/health
+    healthCheckPath: /healthz
     envVars:
       - key: DATABASE_URL
         sync: false
@@ -16,6 +16,14 @@ services:
         sync: false
       - key: REDDIT_USER_AGENT
         value: Konkonsa/1.0
+      - key: X_BEARER_TOKEN
+        sync: false
+      - key: X_SEARCH_QUERY
+        value: '("AI" OR startup OR "small business" OR "side hustle") lang:en -is:retweet'
+      - key: X_FETCH_MAX_RESULTS
+        value: "50"
+      - key: X_FETCH_MAX_PAGES
+        value: "1"
       - key: CORS_ORIGINS
         sync: false
       - key: REQUIRE_AUTH
@@ -45,6 +53,14 @@ services:
         sync: false
       - key: REDDIT_USER_AGENT
         value: Konkonsa/1.0
+      - key: X_BEARER_TOKEN
+        sync: false
+      - key: X_SEARCH_QUERY
+        value: '("AI" OR startup OR "small business" OR "side hustle") lang:en -is:retweet'
+      - key: X_FETCH_MAX_RESULTS
+        value: "50"
+      - key: X_FETCH_MAX_PAGES
+        value: "1"
       - key: SUPABASE_URL
         sync: false
       - key: SUPABASE_JWT_SECRET

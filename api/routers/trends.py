@@ -6,7 +6,7 @@ from datetime import datetime, timedelta
 import asyncio
 
 from database import get_db
-from models import Trend, ItemType, FeedItem
+from models import Trend, ItemType
 from schemas import TrendOut
 
 router = APIRouter(prefix="/trends", tags=["Trends"])
@@ -89,11 +89,11 @@ async def trend_timeline(
     since = datetime.utcnow() - timedelta(days=days)
     result = await db.execute(
         select(
-            func.date(FeedItem.fetched_at).label("date"),
-            func.count(FeedItem.id).label("count"),
+            func.date(Trend.first_seen_at).label("date"),
+            func.count(Trend.id).label("count"),
         )
-        .where(FeedItem.fetched_at >= since)
-        .group_by(func.date(FeedItem.fetched_at))
+        .where(Trend.first_seen_at >= since)
+        .group_by(func.date(Trend.first_seen_at))
         .order_by("date")
     )
     return [{"date": str(r.date), "count": r.count} for r in result.all()]

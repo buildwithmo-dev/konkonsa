@@ -1,17 +1,18 @@
 fastapi>=0.115.0
 uvicorn[standard]>=0.30.0
 sqlalchemy>=2.0.0
-aiosqlite>=0.20.0
-asyncpg>=0.29.0
+aiosqlite>=0.20.0          # SQLite async driver (dev)
+asyncpg>=0.29.0            # Postgres async driver (prod)
 pydantic>=2.0.0
 httpx>=0.27.0
 python-dotenv>=1.0.0
 apscheduler>=3.10.0
-praw>=7.7.0
-pytrends>=4.9.2
+praw>=7.7.0                # Reddit
+pytrends>=4.9.2            # Google Trends
 sentence-transformers>=3.0.0
 scikit-learn>=1.5.0
 redis>=5.0.0
+
 alembic>=1.16.0
 PyJWT[crypto]>=2.10.0
 psycopg[binary]>=3.2.0
