@@ -1,5 +1,9 @@
 import asyncio
+import re
 from datetime import datetime
+
+import feedparser
+import httpx
 from pytrends.request import TrendReq
 from sqlalchemy import select
 
@@ -17,26 +21,35 @@ DEFAULT_KEYWORDS = [
     "mental health app",
 ]
 
-GEO = "GH"   # Default: Ghana — change to "" for worldwide or "US", "GB", etc.
+GEO = "GH"   # Default: Ghana. Use "US", "GB", "NG", "KE", etc. (RSS needs a country code)
+
+TRENDS_RSS = "https://trends.google.com/trending/rss"
+HEADERS = {"User-Agent": "Mozilla/5.0 (compatible; Konkonsa/1.0)"}
 
 
 def _get_pytrends() -> TrendReq:
     return TrendReq(hl="en-US", tz=0, timeout=(10, 25))
 
 
+def _parse_traffic(raw: str) -> int:
+    """'200+' -> 200, '2K+' -> 2000, '1M+' -> 1000000."""
+    m = re.match(r"\s*([\d,.]+)\s*([KM]?)", raw or "", re.I)
+    if not m:
+        return 0
+    num = float(m.group(1).replace(",", ""))
+    mult = {"": 1, "K": 1_000, "M": 1_000_000}[m.group(2).upper()]
+    return int(num * mult)
+
+
 async def fetch_interest_over_time(keywords: list[str], timeframe: str = "now 7-d") -> dict:
-    """
-    Fetch Google Trends interest-over-time for a list of keywords.
-    Returns a dict of {keyword: [{date, value}]}
-    """
+    """Returns {keyword: [{date, value}]} for up to 5 keywords."""
     pytrends = _get_pytrends()
 
-    # pytrends is sync — run in thread pool
     def _fetch():
         pytrends.build_payload(keywords[:5], timeframe=timeframe, geo=GEO)
         return pytrends.interest_over_time()
 
-    df = await asyncio.get_event_loop().run_in_executor(None, _fetch)
+    df = await asyncio.get_running_loop().run_in_executor(None, _fetch)
 
     if df is None or df.empty:
         return {}
@@ -52,17 +65,14 @@ async def fetch_interest_over_time(keywords: list[str], timeframe: str = "now 7-
 
 
 async def fetch_related_queries(keyword: str) -> dict:
-    """
-    Get top and rising related queries for a keyword.
-    Useful for discovering emerging pain points.
-    """
+    """Top and rising related queries for a keyword."""
     pytrends = _get_pytrends()
 
     def _fetch():
         pytrends.build_payload([keyword], timeframe="now 7-d", geo=GEO)
         return pytrends.related_queries()
 
-    data = await asyncio.get_event_loop().run_in_executor(None, _fetch)
+    data = await asyncio.get_running_loop().run_in_executor(None, _fetch)
     result = data.get(keyword, {})
 
     output = {}
@@ -74,75 +84,68 @@ async def fetch_related_queries(keyword: str) -> dict:
     return output
 
 
-async def fetch_trending_searches(geo: str = GEO) -> list[str]:
-    """Get today's trending searches for a country."""
-    pytrends = _get_pytrends()
+async def fetch_trending_searches(geo: str = GEO) -> list[dict]:
+    """Today's trending searches from Google's public RSS feed (replaces pytrends.trending_searches)."""
+    async with httpx.AsyncClient(timeout=15, follow_redirects=True, headers=HEADERS) as client:
+        resp = await client.get(TRENDS_RSS, params={"geo": geo or "US"})
+        resp.raise_for_status()
 
-    def _fetch():
-        df = pytrends.trending_searches(pn=geo.lower() if geo else "united_states")
-        return df[0].tolist() if not df.empty else []
-
-    return await asyncio.get_event_loop().run_in_executor(None, _fetch)
-
-
-async def fetch_realtime_trending(geo: str = GEO) -> list[dict]:
-    """Get real-time trending searches (last 24h)."""
-    pytrends = _get_pytrends()
-
-    def _fetch():
-        df = pytrends.realtime_trending_searches(pn=geo if geo else "US")
-        if df is None or df.empty:
-            return []
-        return df.head(20).to_dict(orient="records")
-
-    return await asyncio.get_event_loop().run_in_executor(None, _fetch)
+    feed = feedparser.parse(resp.text)
+    return [
+        {
+            "term": e.title,
+            "traffic": _parse_traffic(e.get("ht_approx_traffic", "")),
+        }
+        for e in feed.entries[:20]
+    ]
 
 
 async def sync_trends_to_db(source_id: str) -> int:
     """
-    Fetches trending searches + related queries and stores them
-    as FeedItems and Trend records.
-    Returns number of new items created.
+    Stores trending searches as FeedItems and keyword interest as Trend records.
+    Each step fails independently. Returns number of new FeedItems created.
     """
     inserted = 0
+    errors: list[str] = []
 
-    # Step 1: Get today's trending searches
-    trending = await fetch_trending_searches()
+    # Step 1: today's trending searches (non-fatal)
+    try:
+        trending = await fetch_trending_searches()
+    except Exception as e:
+        trending = []
+        errors.append(f"trending: {e}")
+        print(f"[google_trends] trending searches failed: {e}")
 
     async with AsyncSessionLocal() as db:
-        for term in trending[:20]:
-            # Store as FeedItem
-            from models import FeedItem
-            item = FeedItem(
-                source_id=source_id,
-                external_id=f"gt_trending_{term.replace(' ', '_')}_{datetime.utcnow().date()}",
-                title=f"Trending: {term}",
-                body=None,
-                url=f"https://trends.google.com/trends/explore?q={term.replace(' ', '+')}",
-                score=0,
-                raw_data={"type": "trending_search", "term": term},
-            )
-            # Check for duplicate
-            dup = await db.execute(
-                select(FeedItem).where(FeedItem.external_id == item.external_id)
-            )
+        for t in trending:
+            term = t["term"]
+            external_id = f"gt_trending_{term.replace(' ', '_')}_{datetime.utcnow().date()}"
+
+            dup = await db.execute(select(FeedItem).where(FeedItem.external_id == external_id))
             if dup.scalar_one_or_none():
                 continue
 
-            db.add(item)
+            db.add(FeedItem(
+                source_id=source_id,
+                external_id=external_id,
+                title=f"Trending: {term}",
+                body=None,
+                url=f"https://trends.google.com/trends/explore?q={term.replace(' ', '+')}&geo={GEO}",
+                score=t["traffic"],
+                raw_data={"type": "trending_search", "term": term, "approx_traffic": t["traffic"]},
+            ))
             inserted += 1
 
         await db.commit()
 
-    # Step 2: Fetch interest over time for configured keywords
+    # Step 2: interest over time for configured keywords
     async with AsyncSessionLocal() as db:
         result = await db.execute(select(Source).where(Source.id == source_id))
         source = result.scalar_one_or_none()
         keywords = source.config.get("keywords", DEFAULT_KEYWORDS) if source else DEFAULT_KEYWORDS
 
-    # Batch keywords in groups of 5 (pytrends limit)
-    for i in range(0, len(keywords), 5):
-        batch = keywords[i:i+5]
+    for i in range(0, len(keywords), 5):  # pytrends limit: 5 per request
+        batch = keywords[i:i + 5]
         try:
             interest = await fetch_interest_over_time(batch, timeframe="now 7-d")
 
@@ -151,23 +154,20 @@ async def sync_trends_to_db(source_id: str) -> int:
                     if not data_points:
                         continue
 
-                    # Determine if rising: last value > average
                     values = [d["value"] for d in data_points]
-                    avg = sum(values) / len(values) if values else 0
-                    latest = values[-1] if values else 0
+                    avg = sum(values) / len(values)
+                    latest = values[-1]
                     is_rising = latest > avg * 1.3
 
-                    # Upsert Trend record
-                    existing = await db.execute(
-                        select(Trend).where(Trend.title == kw)
-                    )
+                    existing = await db.execute(select(Trend).where(Trend.title == kw))
                     trend = existing.scalar_one_or_none()
                     if trend:
                         trend.is_rising = is_rising
+                        trend.score = float(latest)
                         trend.last_seen_at = datetime.utcnow()
                         trend.volume += 1
                     else:
-                        trend = Trend(
+                        db.add(Trend(
                             title=kw,
                             description=f"Google Trends keyword: {kw}",
                             category=ItemType.trend,
@@ -175,24 +175,24 @@ async def sync_trends_to_db(source_id: str) -> int:
                             score=float(latest),
                             keywords=[kw],
                             is_rising=is_rising,
-                        )
-                        db.add(trend)
+                        ))
 
                 await db.commit()
 
         except Exception as e:
+            errors.append(f"keywords {batch}: {e}")
             print(f"[google_trends] Error for batch {batch}: {e}")
 
-        await asyncio.sleep(1)  # avoid rate limiting
+        await asyncio.sleep(2)  # avoid rate limiting
 
-    # Update source
+    # Update source; surface partial failures in the UI
     async with AsyncSessionLocal() as db:
         result = await db.execute(select(Source).where(Source.id == source_id))
         source = result.scalar_one_or_none()
         if source:
             source.last_fetched_at = datetime.utcnow()
             source.total_items_fetched += inserted
-            source.error_message = None
+            source.error_message = "; ".join(errors)[:500] if errors else None
             await db.commit()
 
     return inserted
@@ -205,7 +205,7 @@ async def fetch_all_configured_trends_sources() -> dict:
         result = await db.execute(
             select(Source).where(
                 Source.type == SourceType.google_trends,
-                Source.is_active == True,
+                Source.is_active == True,  # noqa: E712
             )
         )
         sources = result.scalars().all()
@@ -219,7 +219,7 @@ async def fetch_all_configured_trends_sources() -> dict:
                 result = await db.execute(select(Source).where(Source.id == source.id))
                 s = result.scalar_one_or_none()
                 if s:
-                    s.error_message = str(e)
+                    s.error_message = str(e)[:500]
                     await db.commit()
             results[source.name] = 0
 
