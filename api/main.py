@@ -35,6 +35,7 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+frontend_url = os.getenv("FRONTEND_URL", "https://konkonsa-frontend-lwf8.vercel.app").rstrip("/")
 
 app.add_middleware(
     CORSMiddleware,
