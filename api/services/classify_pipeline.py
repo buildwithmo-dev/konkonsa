@@ -1,10 +1,109 @@
+# import asyncio
+# import json
+# from sqlalchemy import select
+
+# from database import AsyncSessionLocal
+# from models import FeedItem, Classification, ItemType
+# from services.claude import call_claude
+
+# CLASSIFICATION_PROMPT = """
+# You are a social listening analyst. Classify the following social media post and return ONLY valid JSON.
+
+# Post Title: {title}
+# Post Body: {body}
+
+# Return this exact JSON structure with no extra text:
+# {{
+#   "item_type": "pain_point | trend | opportunity | complaint | wish | unknown",
+#   "topic": "short topic label (max 5 words)",
+#   "summary": "1-2 sentence summary of the core issue or signal",
+#   "audience": "who is affected or interested (e.g. 'developers', 'small business owners')",
+#   "severity": 0.0 to 10.0,
+#   "keywords": ["keyword1", "keyword2", "keyword3"],
+#   "sentiment": "positive | negative | neutral"
+# }}
+# """
+
+# MAX_CONCURRENT = 5      # Concurrent Claude API calls
+# BATCH_SIZE = 50         # Items processed per scheduler run
+
+
+# async def classify_single_item(item: FeedItem, db) -> Classification:
+#     """Classify one FeedItem using Claude and save the result."""
+#     title = (item.title or "")[:500]
+#     body = (item.body or "")[:1500]
+
+#     classification = Classification(feed_item_id=item.id)
+#     try:
+#         result = await call_claude(
+#             CLASSIFICATION_PROMPT.format(title=title, body=body),
+#             max_tokens=512,
+#             as_json=True,
+#         )
+#         classification.item_type = ItemType(result.get("item_type", "unknown"))
+#         classification.topic = result.get("topic")
+#         classification.summary = result.get("summary")
+#         classification.audience = result.get("audience")
+#         classification.severity = float(result.get("severity", 0.0))
+#         classification.keywords = result.get("keywords", [])
+#         classification.sentiment = result.get("sentiment")
+#     except Exception as e:
+#         classification.failed = True
+#         classification.error = str(e)
+
+#     db.add(classification)
+#     return classification
+
+
+# async def classify_pending_items(batch_size: int = BATCH_SIZE) -> dict:
+#     """
+#     Find all FeedItems without a Classification and classify them.
+#     Uses a semaphore to cap concurrent Claude API calls.
+#     Returns {"processed": N, "failed": M}
+#     """
+#     async with AsyncSessionLocal() as db:
+#         # Items with no classification
+#         result = await db.execute(
+#             select(FeedItem)
+#             .outerjoin(Classification)
+#             .where(Classification.id == None)
+#             .limit(batch_size)
+#         )
+#         items = result.scalars().all()
+
+#     if not items:
+#         return {"processed": 0, "failed": 0}
+
+#     semaphore = asyncio.Semaphore(MAX_CONCURRENT)
+
+#     async def safe_classify(item: FeedItem):
+#         async with semaphore:
+#             async with AsyncSessionLocal() as db:
+#                 # Double-check it hasn't been classified by another worker
+#                 existing = await db.execute(
+#                     select(Classification).where(Classification.feed_item_id == item.id)
+#                 )
+#                 if existing.scalar_one_or_none():
+#                     return None
+#                 cls = await classify_single_item(item, db)
+#                 await db.commit()
+#                 return cls
+
+#     results = await asyncio.gather(*[safe_classify(item) for item in items], return_exceptions=True)
+
+#     processed = sum(1 for r in results if r is not None and not isinstance(r, Exception))
+#     failed = sum(1 for r in results if isinstance(r, Exception))
+
+#     return {"processed": processed, "failed": failed}
+
 import asyncio
 import json
 from sqlalchemy import select
 
 from database import AsyncSessionLocal
 from models import FeedItem, Classification, ItemType
-from services.claude import call_claude
+# Import call_llm from your Groq helper module (adjust file name if needed)
+from groq_client import call_llm
 
 CLASSIFICATION_PROMPT = """
 You are a social listening analyst. Classify the following social media post and return ONLY valid JSON.
@@ -24,21 +123,22 @@ Return this exact JSON structure with no extra text:
 }}
 """
 
-MAX_CONCURRENT = 5      # Concurrent Claude API calls
+MAX_CONCURRENT = 5      # Concurrent Groq API calls
 BATCH_SIZE = 50         # Items processed per scheduler run
 
 
 async def classify_single_item(item: FeedItem, db) -> Classification:
-    """Classify one FeedItem using Claude and save the result."""
+    """Classify one FeedItem using Groq and save the result."""
     title = (item.title or "")[:500]
     body = (item.body or "")[:1500]
 
     classification = Classification(feed_item_id=item.id)
     try:
-        result = await call_claude(
+        result = await call_llm(
             CLASSIFICATION_PROMPT.format(title=title, body=body),
             max_tokens=512,
             as_json=True,
+            json_object=True,  # Enables Groq's native JSON mode
         )
         classification.item_type = ItemType(result.get("item_type", "unknown"))
         classification.topic = result.get("topic")
@@ -58,7 +158,7 @@ async def classify_single_item(item: FeedItem, db) -> Classification:
 async def classify_pending_items(batch_size: int = BATCH_SIZE) -> dict:
     """
     Find all FeedItems without a Classification and classify them.
-    Uses a semaphore to cap concurrent Claude API calls.
+    Uses a semaphore to cap concurrent Groq API calls.
     Returns {"processed": N, "failed": M}
     """
     async with AsyncSessionLocal() as db:
