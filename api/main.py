@@ -1,9 +1,11 @@
 from contextlib import asynccontextmanager
+import os
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from database import init_db
+from services.scheduler import seed_job_records
 
 from routers.sources import router as sources_router
 from routers.feed import router as feed_router
@@ -25,6 +27,9 @@ from routers.misc import (
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await init_db()
+    # The dedicated Render worker owns scheduled ingestion. The API process
+    # intentionally does not start another scheduler, avoiding duplicate fetches.
+    await seed_job_records()
     yield
 
 
@@ -35,12 +40,10 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-frontend_url = os.getenv("FRONTEND_URL", "https://konkonsa-frontend-lwf8.vercel.app").rstrip("/")
-
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
+    allow_origins=[origin.strip() for origin in os.getenv("CORS_ORIGINS", "*").split(",") if origin.strip()],
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -60,6 +63,11 @@ app.include_router(alerts_router)
 app.include_router(jobs_router)
 app.include_router(analytics_router)
 app.include_router(settings_router)
+
+
+@app.get("/healthz", tags=["Root"])
+async def healthz():
+    return {"status": "ok"}
 
 
 @app.get("/", tags=["Root"])

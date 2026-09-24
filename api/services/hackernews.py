@@ -59,6 +59,12 @@ async def fetch_all_configured_hn_sources() -> dict:
     
     for source in sources:
         config = source.config or {}
-        count = await search_hn(config.get("query", ""), source.id, tags=config.get("tags", "story"))
+        count = await search_hn(
+            config.get("query", ""),
+            source.id,
+            tags=config.get("tags", "story"),
+            hours_back=int(config.get("hours_back", 24)),
+            max_results=int(config.get("max_results", 50)),
+        )
         results[source.name] = count
     return results

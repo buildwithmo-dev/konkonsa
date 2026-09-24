@@ -90,6 +90,11 @@ async def job_classify_unprocessed():
     return await classify_pending_items()
 
 
+async def job_refresh_insights():
+    from services.insights import refresh_insights
+    return await refresh_insights()
+
+
 async def job_recluster():
     """Re-run DBSCAN clustering on all classified items."""
     from services.clustering import recompute_clusters
@@ -147,6 +152,15 @@ def setup_scheduler():
     )
 
     scheduler.add_job(
+        lambda: _run_job("refresh_insights", job_refresh_insights),
+        trigger=IntervalTrigger(minutes=15),
+        id="refresh_insights",
+        name="Refresh Trends and Pain Points",
+        replace_existing=True,
+        max_instances=1,
+    )
+
+    scheduler.add_job(
         lambda: _run_job("recluster", job_recluster),
         trigger=IntervalTrigger(hours=12),
         id="recluster",
@@ -167,6 +181,21 @@ def setup_scheduler():
     return scheduler
 
 
+async def seed_default_sources():
+    """Create the built-in live data sources on a fresh database."""
+    from models import Source, SourceType
+    defaults = [
+        ("Reddit", SourceType.reddit, {"subreddits": ["problems", "startupideas", "entrepreneur", "technology"], "mode": "hot", "limit": 50}, 30),
+        ("Hacker News", SourceType.hackernews, {"query": "", "tags": "story", "hours_back": 24, "max_results": 50}, 60),
+        ("Google Trends", SourceType.google_trends, {}, 360),
+    ]
+    async with AsyncSessionLocal() as db:
+        existing = {row.name for row in (await db.execute(select(Source))).scalars().all()}
+        for name, source_type, config, interval in defaults:
+            if name not in existing:
+                db.add(Source(name=name, type=source_type, config=config, fetch_interval_minutes=interval, is_active=True))
+        await db.commit()
+
 async def seed_job_records():
     """Ensure Job rows exist in the DB for all registered jobs."""
     job_definitions = [
@@ -174,6 +203,7 @@ async def seed_job_records():
         ("ingest_hackernews",   "Fetch Ask HN, Show HN, and keyword results",         60),
         ("ingest_google_trends","Fetch trending searches and keyword interest",        360),
         ("classify_unprocessed","Classify raw feed items via Claude API",              15),
+        ("refresh_insights",    "Materialize trends and pain points from classifications", 15),
         ("recluster",           "Re-run DBSCAN clustering on all embeddings",          720),
         ("check_alerts",        "Evaluate alert conditions and trigger notifications", 10),
     ]
