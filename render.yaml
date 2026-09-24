@@ -4,7 +4,7 @@ services:
     runtime: python
     buildCommand: pip install -r api/requirements.txt
     startCommand: cd api && uvicorn main:app --host 0.0.0.0 --port $PORT
-    healthCheckPath: /healthz
+    healthCheckPath: /settings/health
     envVars:
       - key: DATABASE_URL
         sync: false
