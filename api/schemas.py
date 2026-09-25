@@ -1,4 +1,4 @@
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from typing import Optional, Any
 from datetime import datetime
 from models import SourceType, ItemType, SolutionStatus, JobStatus, AlertStatus
@@ -59,7 +59,15 @@ class ClassifyRequest(BaseModel):
 class ClassifyBatchRequest(BaseModel):
     feed_item_ids: list[str]
 
-class ClassificationOut(BaseModel):
+class _KeywordsListMixin:
+    @field_validator("keywords", mode="before", check_fields=False)
+    @classmethod
+    def normalize_keywords(cls, value):
+        # Existing database rows may contain NULL/None.
+        # The public API contract always exposes keywords as a list.
+        return [] if value is None else value
+
+class ClassificationOut(_KeywordsListMixin, BaseModel):
     id: str
     feed_item_id: str
     item_type: ItemType
@@ -78,7 +86,7 @@ class ClassificationOut(BaseModel):
 
 # ---------- Trends ----------
 
-class TrendOut(BaseModel):
+class TrendOut(_KeywordsListMixin, BaseModel):
     id: str
     title: str
     description: Optional[str]
@@ -98,7 +106,7 @@ class TrendOut(BaseModel):
 class PainPointUpdate(BaseModel):
     severity: Optional[float] = Field(None, ge=0, le=10)
 
-class PainPointOut(BaseModel):
+class PainPointOut(_KeywordsListMixin, BaseModel):
     id: str
     trend_id: Optional[str]
     title: str
@@ -154,7 +162,7 @@ class SearchResult(BaseModel):
 
 # ---------- Clusters ----------
 
-class ClusterOut(BaseModel):
+class ClusterOut(_KeywordsListMixin, BaseModel):
     id: str
     label: str
     keywords: list[str]
