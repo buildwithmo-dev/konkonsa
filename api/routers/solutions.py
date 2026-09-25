@@ -1,4 +1,4 @@
-# api/routers/solutions.py
+import os
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
@@ -7,11 +7,21 @@ from database import get_db
 from models import Solution, PainPoint, Trend, SolutionStatus
 from schemas import SolutionOut, SolutionUpdate, SolutionGenerateRequest, MessageResponse
 from services.llm import call_llm, LLMError, LLMTransientError
+from services.rate_limit import rate_limiter
 
 router = APIRouter(prefix="/solutions", tags=["Solutions"])
 
+# Solution generation/expansion/validation each cost one Groq call and produce
+# LLM-written content someone will read — a tighter default than /classify.
+SOLUTIONS_RATE_LIMIT = int(os.getenv("SOLUTIONS_RATE_LIMIT", "15"))
+SOLUTIONS_RATE_WINDOW_SECONDS = int(os.getenv("SOLUTIONS_RATE_WINDOW_SECONDS", "3600"))
 
-@router.post("/generate", response_model=list[SolutionOut])
+_solutions_limit = Depends(
+    rate_limiter("solutions_llm", limit=SOLUTIONS_RATE_LIMIT, window_seconds=SOLUTIONS_RATE_WINDOW_SECONDS)
+)
+
+
+@router.post("/generate", response_model=list[SolutionOut], dependencies=[_solutions_limit])
 async def generate_solutions(
     payload: SolutionGenerateRequest,
     db: AsyncSession = Depends(get_db),
@@ -109,9 +119,9 @@ async def update_solution(
     solution_id: str, payload: SolutionUpdate, db: AsyncSession = Depends(get_db)
 ):
     """
-    Partial update. Accepts title/description/business_model/target_audience/risks,
-    and now `status` (draft/saved/dismissed) — this is the route the frontend's
-    Save/Dismiss actions hit. It used to target a PATCH route that didn't exist.
+    Partial update — title/description/business_model/target_audience/risks/status.
+    This is the route the frontend's Save/Dismiss actions hit (lib/api.ts: setSolutionStatus).
+    No LLM call here, so no rate limit.
     """
     result = await db.execute(select(Solution).where(Solution.id == solution_id))
     sol = result.scalar_one_or_none()
@@ -147,7 +157,7 @@ async def save_solution(solution_id: str, db: AsyncSession = Depends(get_db)):
     return sol
 
 
-@router.post("/{solution_id}/expand", response_model=SolutionOut)
+@router.post("/{solution_id}/expand", response_model=SolutionOut, dependencies=[_solutions_limit])
 async def expand_solution(solution_id: str, db: AsyncSession = Depends(get_db)):
     """Deep-dive: adds business model and risk analysis via the LLM."""
     result = await db.execute(select(Solution).where(Solution.id == solution_id))
@@ -184,7 +194,7 @@ Return this JSON:
     return sol
 
 
-@router.post("/{solution_id}/validate", response_model=SolutionOut)
+@router.post("/{solution_id}/validate", response_model=SolutionOut, dependencies=[_solutions_limit])
 async def validate_solution(solution_id: str, db: AsyncSession = Depends(get_db)):
     """Ask the LLM to stress-test and critique the idea."""
     result = await db.execute(select(Solution).where(Solution.id == solution_id))
