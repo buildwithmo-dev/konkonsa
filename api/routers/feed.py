@@ -65,15 +65,15 @@ from starlette.websockets import WebSocketDisconnect, WebSocketState
 
 @router.websocket("/ws/feed")
 async def websocket_feed(websocket: WebSocket):
-    await websocket.accept()
+    await manager.connect(websocket)  # registers with ConnectionManager, so it receives broadcasts
     try:
         while True:
-            if websocket.client_state != WebSocketState.CONNECTED:
+            try:
+                await websocket.send_json({"type": "ping"})
+            except (WebSocketDisconnect, RuntimeError):
                 break
-            await websocket.send_json({"type": "ping"})
-            await asyncio.sleep(10)  # or whatever your interval is
+            await asyncio.sleep(10)
     except WebSocketDisconnect:
         pass
     finally:
-        # cleanup if needed
-        pass
+        manager.disconnect(websocket)
