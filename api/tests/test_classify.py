@@ -39,8 +39,8 @@ async def _seed_source_and_item(db: AsyncSession, suffix: str = "") -> tuple[str
 
 @pytest.mark.asyncio
 async def test_classify_single(client: AsyncClient):
-    with patch("routers.classify.call_claude", new_callable=AsyncMock) as mock_claude:
-        mock_claude.return_value = MOCK_CLASSIFICATION
+    with patch("routers.classify.call_llm", new_callable=AsyncMock) as mock_llm:
+        mock_llm.return_value = MOCK_CLASSIFICATION
         response = await client.post("/classify", json={
             "text": "My app crashes every time I save. Data is lost.",
         })
@@ -100,8 +100,8 @@ async def test_retry_classification(client: AsyncClient):
         db.add(cls)
         await db.commit()
 
-    with patch("routers.classify.call_claude", new_callable=AsyncMock) as mock_claude:
-        mock_claude.return_value = MOCK_CLASSIFICATION
+    with patch("routers.classify.call_llm", new_callable=AsyncMock) as mock_llm:
+        mock_llm.return_value = MOCK_CLASSIFICATION
         response = await client.post(f"/classify/retry/{item_id}")
     assert response.status_code == 200
     assert response.json()["failed"] is False

@@ -1,35 +1,14 @@
+# api/routers/solutions.py
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
-import httpx, os, json
 
 from database import get_db
 from models import Solution, PainPoint, Trend, SolutionStatus
 from schemas import SolutionOut, SolutionUpdate, SolutionGenerateRequest, MessageResponse
+from services.llm import call_llm, LLMError, LLMTransientError
 
 router = APIRouter(prefix="/solutions", tags=["Solutions"])
-
-ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
-CLAUDE_MODEL = "claude-sonnet-4-20250514"
-
-
-async def call_claude(prompt: str) -> str:
-    async with httpx.AsyncClient(timeout=60) as client:
-        response = await client.post(
-            "https://api.anthropic.com/v1/messages",
-            headers={
-                "x-api-key": ANTHROPIC_API_KEY,
-                "anthropic-version": "2023-06-01",
-                "content-type": "application/json",
-            },
-            json={
-                "model": CLAUDE_MODEL,
-                "max_tokens": 1500,
-                "messages": [{"role": "user", "content": prompt}],
-            },
-        )
-        response.raise_for_status()
-        return response.json()["content"][0]["text"]
 
 
 @router.post("/generate", response_model=list[SolutionOut])
@@ -72,9 +51,15 @@ Return ONLY a valid JSON array with this structure (no markdown, no preamble):
   }}
 ]
 """
-    raw = await call_claude(prompt)
-    clean = raw.strip().removeprefix("```json").removesuffix("```").strip()
-    ideas = json.loads(clean)
+    try:
+        ideas = await call_llm(prompt, max_tokens=1500, as_json=True)
+    except LLMTransientError as e:
+        raise HTTPException(status_code=503, detail=f"Model temporarily unavailable: {e}") from e
+    except LLMError as e:
+        raise HTTPException(status_code=502, detail=f"Solution generation failed: {e}") from e
+
+    if not isinstance(ideas, list):
+        raise HTTPException(status_code=502, detail="Model did not return a JSON array of ideas")
 
     solutions = []
     for idea in ideas:
@@ -123,6 +108,11 @@ async def get_solution(solution_id: str, db: AsyncSession = Depends(get_db)):
 async def update_solution(
     solution_id: str, payload: SolutionUpdate, db: AsyncSession = Depends(get_db)
 ):
+    """
+    Partial update. Accepts title/description/business_model/target_audience/risks,
+    and now `status` (draft/saved/dismissed) — this is the route the frontend's
+    Save/Dismiss actions hit. It used to target a PATCH route that didn't exist.
+    """
     result = await db.execute(select(Solution).where(Solution.id == solution_id))
     sol = result.scalar_one_or_none()
     if not sol:
@@ -159,7 +149,7 @@ async def save_solution(solution_id: str, db: AsyncSession = Depends(get_db)):
 
 @router.post("/{solution_id}/expand", response_model=SolutionOut)
 async def expand_solution(solution_id: str, db: AsyncSession = Depends(get_db)):
-    """Deep-dive: adds business model and risk analysis via Claude."""
+    """Deep-dive: adds business model and risk analysis via the LLM."""
     result = await db.execute(select(Solution).where(Solution.id == solution_id))
     sol = result.scalar_one_or_none()
     if not sol:
@@ -178,9 +168,12 @@ Return this JSON:
   "risks": "Top 3 risks with mitigation strategies"
 }}
 """
-    raw = await call_claude(prompt)
-    clean = raw.strip().removeprefix("```json").removesuffix("```").strip()
-    expanded = json.loads(clean)
+    try:
+        expanded = await call_llm(prompt, max_tokens=800, as_json=True)
+    except LLMTransientError as e:
+        raise HTTPException(status_code=503, detail=f"Model temporarily unavailable: {e}") from e
+    except LLMError as e:
+        raise HTTPException(status_code=502, detail=f"Expansion failed: {e}") from e
 
     sol.business_model = expanded.get("business_model", sol.business_model)
     sol.target_audience = expanded.get("target_audience", sol.target_audience)
@@ -193,7 +186,7 @@ Return this JSON:
 
 @router.post("/{solution_id}/validate", response_model=SolutionOut)
 async def validate_solution(solution_id: str, db: AsyncSession = Depends(get_db)):
-    """Ask Claude to stress-test and critique the idea."""
+    """Ask the LLM to stress-test and critique the idea."""
     result = await db.execute(select(Solution).where(Solution.id == solution_id))
     sol = result.scalar_one_or_none()
     if not sol:
@@ -210,7 +203,13 @@ Target Audience: {sol.target_audience}
 Cover: market size reality check, competition, why it could fail, and what would make it succeed.
 Keep it under 300 words, be direct and honest.
 """
-    critique = await call_claude(prompt)
+    try:
+        critique = await call_llm(prompt, max_tokens=500)
+    except LLMTransientError as e:
+        raise HTTPException(status_code=503, detail=f"Model temporarily unavailable: {e}") from e
+    except LLMError as e:
+        raise HTTPException(status_code=502, detail=f"Validation failed: {e}") from e
+
     sol.validation_notes = critique
     await db.commit()
     await db.refresh(sol)

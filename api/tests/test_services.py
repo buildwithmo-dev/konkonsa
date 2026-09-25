@@ -137,32 +137,32 @@ async def test_cosine_similarity():
 # ─── Claude Service Tests ───
 
 @pytest.mark.asyncio
-async def test_call_claude_returns_text():
+async def test_call_llm_returns_text():
     with patch("httpx.AsyncClient.post") as mock_post:
         mock_resp = MagicMock()
+        mock_resp.status_code = 200
         mock_resp.json.return_value = {
-            "content": [{"text": '{"item_type": "pain_point"}'}]
+            "choices": [{"message": {"content": '{"item_type": "pain_point"}'}}]
         }
-        mock_resp.raise_for_status = MagicMock()
-        mock_post.return_value.__aenter__ = AsyncMock(return_value=mock_resp)
-        mock_post.return_value.__aexit__ = AsyncMock(return_value=False)
+        mock_post.return_value = mock_resp
 
-        from services.claude import call_claude
-        result = await call_claude("classify this", as_json=True)
+        with patch.dict("os.environ", {"GROQ_API_KEY": "test-key"}):
+            from services.llm import call_llm
+            result = await call_llm("classify this", as_json=True)
         assert result["item_type"] == "pain_point"
 
 
 @pytest.mark.asyncio
-async def test_call_claude_strips_markdown_fences():
+async def test_call_llm_strips_markdown_fences():
     with patch("httpx.AsyncClient.post") as mock_post:
         mock_resp = MagicMock()
+        mock_resp.status_code = 200
         mock_resp.json.return_value = {
-            "content": [{"text": '```json\n{"item_type": "trend"}\n```'}]
+            "choices": [{"message": {"content": '```json\n{"item_type": "trend"}\n```'}}]
         }
-        mock_resp.raise_for_status = MagicMock()
-        mock_post.return_value.__aenter__ = AsyncMock(return_value=mock_resp)
-        mock_post.return_value.__aexit__ = AsyncMock(return_value=False)
+        mock_post.return_value = mock_resp
 
-        from services.claude import call_claude
-        result = await call_claude("test", as_json=True)
+        with patch.dict("os.environ", {"GROQ_API_KEY": "test-key"}):
+            from services.llm import call_llm
+            result = await call_llm("test", as_json=True)
         assert result["item_type"] == "trend"

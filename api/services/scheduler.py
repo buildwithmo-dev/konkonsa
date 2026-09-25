@@ -1,3 +1,4 @@
+# api/services/scheduler.py
 import logging
 from datetime import datetime
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -11,10 +12,6 @@ logger = logging.getLogger("scheduler")
 
 scheduler = AsyncIOScheduler(timezone="UTC")
 
-
-# ─────────────────────────────────────────────
-#  Job wrappers — each logs to the DB
-# ─────────────────────────────────────────────
 
 async def _run_job(job_name: str, fn):
     """Wrapper that records start/end and errors in JobLog."""
@@ -90,20 +87,23 @@ async def job_ingest_x():
 
 
 async def job_classify_unprocessed():
-    """Classify all feed items that don't have a classification yet."""
     from services.classify_pipeline import classify_pending_items
     return await classify_pending_items()
 
 
+async def job_synthesize_insights():
+    """Roll classified feed items up into aggregated PainPoint/Trend records."""
+    from services.aggregation import synthesize_insights
+    return await synthesize_insights()
+
+
 async def job_recluster():
-    """Re-run DBSCAN clustering on all classified items."""
     from services.clustering import recompute_clusters
     result = await recompute_clusters()
     return {"clusters": result.get("clusters", 0)}
 
 
 async def job_check_alerts():
-    """Evaluate all active alerts and trigger if conditions are met."""
     from services.alert_checker import check_all_alerts
     return await check_all_alerts()
 
@@ -113,78 +113,51 @@ async def job_check_alerts():
 # ─────────────────────────────────────────────
 
 def setup_scheduler():
-    """Register all jobs with their intervals. Call once at startup."""
-
     scheduler.add_job(
         lambda: _run_job("ingest_reddit", job_ingest_reddit),
-        trigger=IntervalTrigger(minutes=30),
-        id="ingest_reddit",
-        name="Ingest Reddit",
-        replace_existing=True,
-        max_instances=1,
+        trigger=IntervalTrigger(minutes=30), id="ingest_reddit", name="Ingest Reddit",
+        replace_existing=True, max_instances=1,
     )
-
     scheduler.add_job(
         lambda: _run_job("ingest_hackernews", job_ingest_hn),
-        trigger=IntervalTrigger(minutes=60),
-        id="ingest_hackernews",
-        name="Ingest Hacker News",
-        replace_existing=True,
-        max_instances=1,
+        trigger=IntervalTrigger(minutes=60), id="ingest_hackernews", name="Ingest Hacker News",
+        replace_existing=True, max_instances=1,
     )
-
     scheduler.add_job(
         lambda: _run_job("ingest_google_trends", job_ingest_google_trends),
-        trigger=IntervalTrigger(hours=6),
-        id="ingest_google_trends",
-        name="Ingest Google Trends",
-        replace_existing=True,
-        max_instances=1,
+        trigger=IntervalTrigger(hours=6), id="ingest_google_trends", name="Ingest Google Trends",
+        replace_existing=True, max_instances=1,
     )
-
     scheduler.add_job(
         lambda: _run_job("ingest_x", job_ingest_x),
-        trigger=IntervalTrigger(minutes=30),
-        id="ingest_x",
-        name="Ingest X",
-        replace_existing=True,
-        max_instances=1,
+        trigger=IntervalTrigger(minutes=30), id="ingest_x", name="Ingest X",
+        replace_existing=True, max_instances=1,
     )
-
     scheduler.add_job(
         lambda: _run_job("classify_unprocessed", job_classify_unprocessed),
-        trigger=IntervalTrigger(minutes=15),
-        id="classify_unprocessed",
-        name="Classify Unprocessed Items",
-        replace_existing=True,
-        max_instances=1,
+        trigger=IntervalTrigger(minutes=15), id="classify_unprocessed", name="Classify Unprocessed Items",
+        replace_existing=True, max_instances=1,
     )
-
+    scheduler.add_job(
+        lambda: _run_job("synthesize_insights", job_synthesize_insights),
+        trigger=IntervalTrigger(minutes=20), id="synthesize_insights", name="Synthesize Pain Points & Trends",
+        replace_existing=True, max_instances=1,
+    )
     scheduler.add_job(
         lambda: _run_job("recluster", job_recluster),
-        trigger=IntervalTrigger(hours=12),
-        id="recluster",
-        name="Recompute Clusters",
-        replace_existing=True,
-        max_instances=1,
+        trigger=IntervalTrigger(hours=12), id="recluster", name="Recompute Clusters",
+        replace_existing=True, max_instances=1,
     )
-
     scheduler.add_job(
         lambda: _run_job("check_alerts", job_check_alerts),
-        trigger=IntervalTrigger(minutes=10),
-        id="check_alerts",
-        name="Check Alerts",
-        replace_existing=True,
-        max_instances=1,
+        trigger=IntervalTrigger(minutes=10), id="check_alerts", name="Check Alerts",
+        replace_existing=True, max_instances=1,
     )
-
     return scheduler
 
 
 async def ensure_default_x_source():
-    """Create the default X source when an X bearer token is configured."""
     from services.x import DEFAULT_QUERY, get_x_bearer_token
-
     try:
         get_x_bearer_token()
     except RuntimeError:
@@ -193,63 +166,46 @@ async def ensure_default_x_source():
 
     async with AsyncSessionLocal() as db:
         result = await db.execute(
-            select(Source).where(
-                Source.type == SourceType.twitter,
-                Source.name == "X",
-            )
+            select(Source).where(Source.type == SourceType.twitter, Source.name == "X")
         )
         if result.scalar_one_or_none():
             return
-
-        db.add(
-            Source(
-                name="X",
-                type=SourceType.twitter,
-                config={
-                    "query": DEFAULT_QUERY,
-                    "max_results": 50,
-                    "max_pages": 1,
-                },
-                is_active=True,
-                fetch_interval_minutes=30,
-            )
-        )
+        db.add(Source(
+            name="X", type=SourceType.twitter,
+            config={"query": DEFAULT_QUERY, "max_results": 50, "max_pages": 1},
+            is_active=True, fetch_interval_minutes=30,
+        ))
         await db.commit()
         logger.info("Created default X source.")
 
 
 async def seed_job_records():
-    """Ensure Job and default source rows exist for registered jobs."""
     await ensure_default_x_source()
 
     job_definitions = [
-        ("ingest_reddit",        "Fetch new posts from configured subreddits",         30),
-        ("ingest_hackernews",    "Fetch Ask HN, Show HN, and keyword results",          60),
-        ("ingest_google_trends", "Fetch trending searches and keyword interest",        360),
-        ("ingest_x",             "Fetch recent X posts for configured search queries",  30),
-        ("classify_unprocessed", "Classify raw feed items via Claude API",              15),
-        ("recluster",            "Re-run DBSCAN clustering on all embeddings",          720),
-        ("check_alerts",         "Evaluate alert conditions and trigger notifications", 10),
+        ("ingest_reddit",        "Fetch new posts from configured subreddits",           30),
+        ("ingest_hackernews",    "Fetch Ask HN, Show HN, and keyword results",            60),
+        ("ingest_google_trends", "Fetch trending searches and keyword interest",          360),
+        ("ingest_x",             "Fetch recent X posts for configured search queries",    30),
+        ("classify_unprocessed", "Classify raw feed items via the LLM",                   15),
+        ("synthesize_insights",  "Roll classified items up into pain points & trends",    20),
+        ("recluster",            "Re-run DBSCAN clustering on all embeddings",            720),
+        ("check_alerts",         "Evaluate alert conditions and trigger notifications",   10),
     ]
 
     async with AsyncSessionLocal() as db:
         for name, description, interval in job_definitions:
             result = await db.execute(select(Job).where(Job.name == name))
             if not result.scalar_one_or_none():
-                db.add(Job(
-                    name=name,
-                    description=description,
-                    interval_minutes=interval,
-                    status=JobStatus.idle,
-                ))
+                db.add(Job(name=name, description=description, interval_minutes=interval, status=JobStatus.idle))
         await db.commit()
 
+
 async def run_all_tasks_now():
-    """Manual trigger for all active scrapers and classification pipeline."""
+    """Manual trigger for all active scrapers, classification, and synthesis."""
     import asyncio
 
     logger.info("MANUAL TRIGGER: Starting all background tasks...")
-
     await asyncio.gather(
         _run_job("ingest_reddit", job_ingest_reddit),
         _run_job("ingest_hackernews", job_ingest_hn),
@@ -259,5 +215,8 @@ async def run_all_tasks_now():
 
     logger.info("Starting classification pipeline...")
     await _run_job("classify_unprocessed", job_classify_unprocessed)
+
+    logger.info("Synthesizing pain points and trends...")
+    await _run_job("synthesize_insights", job_synthesize_insights)
 
     logger.info("All manual tasks complete.")

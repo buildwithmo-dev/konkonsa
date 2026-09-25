@@ -52,8 +52,7 @@ async def _seed_solution(pain_point_id: str) -> str:
 @pytest.mark.asyncio
 async def test_generate_solutions(client: AsyncClient):
     pp_id = await _seed_pain_point()
-    with patch("routers.solutions.call_claude", new_callable=AsyncMock) as mock:
-        mock.return_value = str(MOCK_SOLUTIONS).replace("'", '"')
+    with patch("routers.solutions.call_llm", new_callable=AsyncMock) as mock:
         import json
         mock.return_value = json.dumps(MOCK_SOLUTIONS)
         response = await client.post("/solutions/generate", json={
@@ -130,7 +129,7 @@ async def test_expand_solution(client: AsyncClient):
     pp_id = await _seed_pain_point()
     sol_id = await _seed_solution(pp_id)
 
-    with patch("routers.solutions.call_claude", new_callable=AsyncMock) as mock:
+    with patch("routers.solutions.call_llm", new_callable=AsyncMock) as mock:
         import json
         mock.return_value = json.dumps(MOCK_EXPAND)
         response = await client.post(f"/solutions/{sol_id}/expand")
@@ -143,7 +142,7 @@ async def test_validate_solution(client: AsyncClient):
     pp_id = await _seed_pain_point()
     sol_id = await _seed_solution(pp_id)
 
-    with patch("routers.solutions.call_claude", new_callable=AsyncMock) as mock:
+    with patch("routers.solutions.call_llm", new_callable=AsyncMock) as mock:
         mock.return_value = "This idea has merit but faces stiff competition from incumbents..."
         response = await client.post(f"/solutions/{sol_id}/validate")
     assert response.status_code == 200
@@ -154,3 +153,13 @@ async def test_validate_solution(client: AsyncClient):
 async def test_solution_not_found(client: AsyncClient):
     response = await client.get("/solutions/nonexistent")
     assert response.status_code == 404
+
+@pytest.mark.asyncio
+async def test_update_solution_status(client: AsyncClient):
+    """The frontend's Save/Dismiss buttons hit this route with {status: ...}."""
+    pp_id = await _seed_pain_point()
+    sol_id = await _seed_solution(pp_id)
+
+    response = await client.put(f"/solutions/{sol_id}", json={"status": "dismissed"})
+    assert response.status_code == 200
+    assert response.json()["status"] == "dismissed"

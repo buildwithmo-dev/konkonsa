@@ -99,6 +99,9 @@ class FeedItem(Base):
 
 class Classification(Base):
     __tablename__ = "classifications"
+    __table_args__ = (
+        Index("ix_classifications_promoted_at", "promoted_at"),
+    )
 
     id = Column(String, primary_key=True, default=gen_uuid)
     feed_item_id = Column(String, ForeignKey("feed_items.id"), nullable=False)
@@ -114,27 +117,13 @@ class Classification(Base):
     failed = Column(Boolean, default=False)
     error = Column(Text, nullable=True)
 
+    # --- insight-synthesis linkage (new) ---
+    promoted_at = Column(DateTime, nullable=True)             # set once rolled up into a PainPoint/Trend
+    pain_point_id = Column(String, ForeignKey("pain_points.id", ondelete="SET NULL"), nullable=True)
+    trend_id = Column(String, ForeignKey("trends.id", ondelete="SET NULL"), nullable=True)
+
     feed_item = relationship("FeedItem", back_populates="classification")
     cluster = relationship("Cluster", back_populates="classifications")
-
-
-class Trend(Base):
-    __tablename__ = "trends"
-
-    id = Column(String, primary_key=True, default=gen_uuid)
-    title = Column(String, nullable=False)
-    description = Column(Text, nullable=True)
-    category = Column(SAEnum(ItemType, native_enum=False), default=ItemType.trend)
-    volume = Column(Integer, default=1)         # how many posts
-    score = Column(Float, default=0.0)
-    keywords = Column(JSON, default=list)
-    audience = Column(String, nullable=True)
-    is_rising = Column(Boolean, default=False)
-    first_seen_at = Column(DateTime, server_default=func.now())
-    last_seen_at = Column(DateTime, server_default=func.now())
-
-    pain_points = relationship("PainPoint", back_populates="trend")
-    solutions = relationship("Solution", back_populates="trend")
 
 
 class PainPoint(Base):
@@ -149,11 +138,32 @@ class PainPoint(Base):
     frequency = Column(Integer, default=1)
     keywords = Column(JSON, default=list)
     is_dismissed = Column(Boolean, default=False)
+    embedding = Column(JSON, nullable=True)      # new — for similarity-based merge in aggregation
     created_at = Column(DateTime, server_default=func.now())
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
 
     trend = relationship("Trend", back_populates="pain_points")
     solutions = relationship("Solution", back_populates="pain_point")
+
+
+class Trend(Base):
+    __tablename__ = "trends"
+
+    id = Column(String, primary_key=True, default=gen_uuid)
+    title = Column(String, nullable=False)
+    description = Column(Text, nullable=True)
+    category = Column(SAEnum(ItemType, native_enum=False), default=ItemType.trend)
+    volume = Column(Integer, default=1)         # how many posts
+    score = Column(Float, default=0.0)
+    keywords = Column(JSON, default=list)
+    audience = Column(String, nullable=True)
+    is_rising = Column(Boolean, default=False)
+    embedding = Column(JSON, nullable=True)      # new — for similarity-based merge in aggregation
+    first_seen_at = Column(DateTime, server_default=func.now())
+    last_seen_at = Column(DateTime, server_default=func.now())
+
+    pain_points = relationship("PainPoint", back_populates="trend")
+    solutions = relationship("Solution", back_populates="trend")
 
 
 class Solution(Base):

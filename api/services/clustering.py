@@ -1,8 +1,8 @@
+# api/services/clustering.py
 import numpy as np
-import asyncio
 from datetime import datetime
 from collections import Counter
-from sqlalchemy import select
+from sqlalchemy import select, update
 
 from models import Classification, FeedItem, Cluster
 from database import AsyncSessionLocal
@@ -10,16 +10,15 @@ from services.embeddings import embed_texts, embed_text
 
 
 async def recompute_clusters(
-    eps: float = 0.3,           # DBSCAN radius — lower = tighter clusters
-    min_samples: int = 2,       # Min items to form a cluster
-    max_items: int = 1000,      # Cap to avoid memory issues
+    eps: float = 0.3,
+    min_samples: int = 2,
+    max_items: int = 1000,
 ) -> dict:
     """
     Main clustering pipeline:
     1. Load classifications with embedded feed items
     2. Run DBSCAN
     3. Save Cluster records and assign cluster_id to classifications
-    Returns summary stats.
     """
     from sklearn.cluster import DBSCAN
     from sklearn.preprocessing import normalize
@@ -36,20 +35,15 @@ async def recompute_clusters(
     if not rows:
         return {"status": "no data", "clusters": 0, "noise": 0}
 
-    # Build text for embedding (use summary + title as signal)
     texts = [
         f"{r.Classification.topic or ''} {r.Classification.summary or ''} {r.FeedItem.title or ''}"
         for r in rows
     ]
 
-    # Check if precomputed embeddings exist, else compute now
     vectors = []
     for r in rows:
         cached = (r.FeedItem.raw_data or {}).get("embedding")
-        if cached:
-            vectors.append(cached)
-        else:
-            vectors.append(None)
+        vectors.append(cached if cached else None)
 
     missing_idx = [i for i, v in enumerate(vectors) if v is None]
     if missing_idx:
@@ -60,14 +54,12 @@ async def recompute_clusters(
 
     X = normalize(np.array(vectors, dtype=np.float32))
 
-    # Run DBSCAN
     db_scan = DBSCAN(eps=eps, min_samples=min_samples, metric="cosine", n_jobs=-1)
     labels = db_scan.fit_predict(X)
 
     n_clusters = len(set(labels)) - (1 if -1 in labels else 0)
     n_noise = int(np.sum(labels == -1))
 
-    # Build clusters from labels
     cluster_groups: dict[int, list[int]] = {}
     for idx, label in enumerate(labels):
         if label == -1:
@@ -75,16 +67,26 @@ async def recompute_clusters(
         cluster_groups.setdefault(label, []).append(idx)
 
     async with AsyncSessionLocal() as db:
-        # Clear existing clusters
+        # Detach classifications BEFORE deleting clusters. cluster_id has no
+        # ON DELETE clause, so on Postgres (unlike the SQLite test DB, which
+        # doesn't enforce FKs) db.delete(c) below would otherwise raise
+        # ForeignKeyViolation for any cluster still referenced.
         existing = await db.execute(select(Cluster))
-        for c in existing.scalars().all():
+        existing_clusters = existing.scalars().all()
+        existing_ids = [c.id for c in existing_clusters]
+        if existing_ids:
+            await db.execute(
+                update(Classification)
+                .where(Classification.cluster_id.in_(existing_ids))
+                .values(cluster_id=None)
+            )
+        for c in existing_clusters:
             await db.delete(c)
         await db.commit()
 
         label_to_cluster_id: dict[int, str] = {}
 
         for label, indices in cluster_groups.items():
-            # Derive a label from most common keywords
             all_keywords = []
             for idx in indices:
                 kws = rows[idx].Classification.keywords or []
@@ -93,7 +95,6 @@ async def recompute_clusters(
             top_keywords = [kw for kw, _ in Counter(all_keywords).most_common(5)]
             cluster_label = ", ".join(top_keywords) if top_keywords else f"Cluster {label}"
 
-            # Compute centroid
             cluster_vecs = np.array([vectors[i] for i in indices])
             centroid = cluster_vecs.mean(axis=0).tolist()
 
@@ -107,14 +108,11 @@ async def recompute_clusters(
             await db.flush()
             label_to_cluster_id[label] = cluster.id
 
-        # Assign cluster_id to classifications
         for idx, label in enumerate(labels):
             if label == -1:
                 continue
             cls = rows[idx].Classification
-            cls_result = await db.execute(
-                select(Classification).where(Classification.id == cls.id)
-            )
+            cls_result = await db.execute(select(Classification).where(Classification.id == cls.id))
             cls_obj = cls_result.scalar_one_or_none()
             if cls_obj:
                 cls_obj.cluster_id = label_to_cluster_id[label]
@@ -130,15 +128,7 @@ async def recompute_clusters(
     }
 
 
-async def get_cluster_neighbors(
-    cluster_id: str,
-    query: str,
-    top_k: int = 5,
-) -> list[dict]:
-    """
-    Given a cluster ID and a query, return the most relevant
-    classifications within that cluster.
-    """
+async def get_cluster_neighbors(cluster_id: str, query: str, top_k: int = 5) -> list[dict]:
     async with AsyncSessionLocal() as db:
         result = await db.execute(
             select(Classification, FeedItem)

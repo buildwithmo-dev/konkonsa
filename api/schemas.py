@@ -125,6 +125,7 @@ class SolutionUpdate(BaseModel):
     business_model: Optional[str] = None
     target_audience: Optional[str] = None
     risks: Optional[str] = None
+    status: Optional[SolutionStatus] = None   # new — lets the Solutions page Save/Dismiss actions work
 
 class SolutionOut(BaseModel):
     id: str
