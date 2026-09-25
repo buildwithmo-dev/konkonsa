@@ -61,17 +61,19 @@ async def delete_feed_item(item_id: str, db: AsyncSession = Depends(get_db)):
     return {"message": "Feed item removed"}
 
 
+from starlette.websockets import WebSocketDisconnect, WebSocketState
+
 @router.websocket("/ws/feed")
 async def websocket_feed(websocket: WebSocket):
-    """
-    Streams a message whenever any ingestion service (running on the worker
-    dyno) commits new FeedItems — see services/realtime.py for how that
-    crosses the process boundary via Postgres NOTIFY.
-    """
-    await manager.connect(websocket)
+    await websocket.accept()
     try:
         while True:
-            await asyncio.sleep(30)
+            if websocket.client_state != WebSocketState.CONNECTED:
+                break
             await websocket.send_json({"type": "ping"})
+            await asyncio.sleep(10)  # or whatever your interval is
     except WebSocketDisconnect:
-        manager.disconnect(websocket)
+        pass
+    finally:
+        # cleanup if needed
+        pass
