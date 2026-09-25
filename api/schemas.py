@@ -56,8 +56,10 @@ class ClassifyRequest(BaseModel):
     text: str
     context: Optional[str] = None
 
+
 class ClassifyBatchRequest(BaseModel):
     feed_item_ids: list[str]
+
 
 class _KeywordsListMixin:
     @field_validator("keywords", mode="before", check_fields=False)
@@ -67,6 +69,7 @@ class _KeywordsListMixin:
         # The public API contract always exposes keywords as a list.
         return [] if value is None else value
 
+
 class ClassificationOut(_KeywordsListMixin, BaseModel):
     id: str
     feed_item_id: str
@@ -75,7 +78,7 @@ class ClassificationOut(_KeywordsListMixin, BaseModel):
     summary: Optional[str]
     audience: Optional[str]
     severity: float
-    keywords: list[str]
+    keywords: list[str] = Field(default_factory=list)
     sentiment: Optional[str]
     cluster_id: Optional[str]
     classified_at: datetime
@@ -93,7 +96,7 @@ class TrendOut(_KeywordsListMixin, BaseModel):
     category: ItemType
     volume: int
     score: float
-    keywords: list[str]
+    keywords: list[str] = Field(default_factory=list)
     audience: Optional[str]
     is_rising: bool
     first_seen_at: datetime
@@ -106,6 +109,7 @@ class TrendOut(_KeywordsListMixin, BaseModel):
 class PainPointUpdate(BaseModel):
     severity: Optional[float] = Field(None, ge=0, le=10)
 
+
 class PainPointOut(_KeywordsListMixin, BaseModel):
     id: str
     trend_id: Optional[str]
@@ -116,6 +120,17 @@ class PainPointOut(_KeywordsListMixin, BaseModel):
     frequency: int | None = None
     keywords: list[str] = Field(default_factory=list)
     is_dismissed: bool
+    created_at: datetime
+    model_config = {"from_attributes": True}
+
+
+# ---------- Clusters ----------
+
+class ClusterOut(_KeywordsListMixin, BaseModel):
+    id: str
+    label: str
+    keywords: list[str] = Field(default_factory=list)
+    item_count: int
     created_at: datetime
     model_config = {"from_attributes": True}
 
@@ -158,18 +173,6 @@ class SearchResult(BaseModel):
     title: str
     snippet: Optional[str]
     score: Optional[float]
-
-
-# ---------- Clusters ----------
-
-class ClusterOut(_KeywordsListMixin, BaseModel):
-    id: str
-    label: str
-    keywords: list[str]
-    item_count: int
-    created_at: datetime
-    model_config = {"from_attributes": True}
-
 
 # ---------- Alerts ----------
 
