@@ -5,6 +5,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from database import init_db
+from services.realtime import start_listener, stop_listener
 from routers.sources import router as sources_router
 from routers.feed import router as feed_router
 from routers.classify import router as classify_router
@@ -24,7 +25,9 @@ from routers.misc import (
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await init_db()
+    await start_listener()
     yield
+    await stop_listener()
 
 
 app = FastAPI(
@@ -52,7 +55,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
 
 app.include_router(sources_router)
 app.include_router(feed_router)

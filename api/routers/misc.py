@@ -9,7 +9,7 @@ from auth import get_current_user
 from models import (
     Trend, PainPoint, Solution, FeedItem, Classification,
     Cluster, Alert, AlertHistory, AlertStatus,
-    Job, JobLog, JobStatus, AppSettings
+    Job, JobLog, JobStatus, AppSettings, Source
 )
 from schemas import (
     SearchResult, ClusterOut,
@@ -82,7 +82,9 @@ async def get_cluster(cluster_id: str, db: AsyncSession = Depends(get_db)):
     if not cluster:
         raise HTTPException(status_code=404, detail="Cluster not found")
 
-    cls_result = await db.execute(select(Classification).where(Classification.cluster_id == cluster_id))
+    cls_result = await db.execute(
+        select(Classification).where(Classification.cluster_id == cluster_id)
+    )
     items = cls_result.scalars().all()
     return {
         "cluster": ClusterOut.model_validate(cluster),
@@ -96,97 +98,6 @@ async def recompute_clusters(background_tasks: BackgroundTasks):
     from services.clustering import recompute_clusters as _recompute_clusters
     background_tasks.add_task(_recompute_clusters)
     return {"message": "Cluster recomputation started in background"}
-
-
-# ─────────────────────────────────────────────
-#  JOBS  (single definition — previously this router was declared twice in
-#  this file, and the second declaration silently shadowed this one, so
-#  GET /jobs, pause/resume/run, and /jobs/logs were never reachable)
-# ─────────────────────────────────────────────
-jobs_router = APIRouter(prefix="/jobs", tags=["Jobs"])
-
-
-@jobs_router.get("", response_model=list[JobOut])
-async def list_jobs(db: AsyncSession = Depends(get_db)):
-    result = await db.execute(select(Job).order_by(Job.name))
-    return result.scalars().all()
-
-
-@jobs_router.post("/run_all", response_model=MessageResponse)
-async def run_all_jobs(background_tasks: BackgroundTasks, _user=Depends(get_current_user)):
-    """Triggers all active scrapers, classification, and synthesis immediately."""
-    from services.scheduler import run_all_tasks_now
-    background_tasks.add_task(run_all_tasks_now)
-    return {"message": "All background scrapers have been triggered manually."}
-
-
-@jobs_router.post("/{job_id}/pause", response_model=JobOut)
-async def pause_job(job_id: str, db: AsyncSession = Depends(get_db), _user=Depends(get_current_user)):
-    result = await db.execute(select(Job).where(Job.id == job_id))
-    job = result.scalar_one_or_none()
-    if not job:
-        raise HTTPException(status_code=404, detail="Job not found")
-    job.status = JobStatus.paused
-    await db.commit()
-    await db.refresh(job)
-    return job
-
-
-@jobs_router.post("/{job_id}/resume", response_model=JobOut)
-async def resume_job(job_id: str, db: AsyncSession = Depends(get_db)):
-    result = await db.execute(select(Job).where(Job.id == job_id))
-    job = result.scalar_one_or_none()
-    if not job:
-        raise HTTPException(status_code=404, detail="Job not found")
-    job.status = JobStatus.idle
-    await db.commit()
-    await db.refresh(job)
-    return job
-
-
-@jobs_router.post("/{job_id}/run", response_model=MessageResponse)
-async def run_job(job_id: str, background_tasks: BackgroundTasks, db: AsyncSession = Depends(get_db)):
-    """Dispatches to the actual job handler by name (previously a `pass` stub)."""
-    from services.scheduler import (
-        _run_job, job_ingest_reddit, job_ingest_hn, job_ingest_google_trends, job_ingest_x,
-        job_classify_unprocessed, job_synthesize_insights, job_recluster, job_check_alerts,
-    )
-
-    handlers = {
-        "ingest_reddit": job_ingest_reddit,
-        "ingest_hackernews": job_ingest_hn,
-        "ingest_google_trends": job_ingest_google_trends,
-        "ingest_x": job_ingest_x,
-        "classify_unprocessed": job_classify_unprocessed,
-        "synthesize_insights": job_synthesize_insights,
-        "recluster": job_recluster,
-        "check_alerts": job_check_alerts,
-    }
-
-    result = await db.execute(select(Job).where(Job.id == job_id))
-    job = result.scalar_one_or_none()
-    if not job:
-        raise HTTPException(status_code=404, detail="Job not found")
-
-    handler = handlers.get(job.name)
-    if handler is None:
-        raise HTTPException(status_code=400, detail=f"No handler registered for job '{job.name}'")
-
-    background_tasks.add_task(_run_job, job.name, handler)
-    return {"message": f"Job '{job.name}' triggered manually"}
-
-
-@jobs_router.get("/logs", response_model=list[JobLogOut])
-async def job_logs(
-    job_id: Optional[str] = None,
-    limit: int = Query(50, ge=1, le=500),
-    db: AsyncSession = Depends(get_db),
-):
-    query = select(JobLog).order_by(JobLog.started_at.desc()).limit(limit)
-    if job_id:
-        query = query.where(JobLog.job_id == job_id)
-    result = await db.execute(query)
-    return result.scalars().all()
 
 
 # ─────────────────────────────────────────────
@@ -241,6 +152,107 @@ async def alert_history(db: AsyncSession = Depends(get_db)):
     )
     return result.scalars().all()
 
+
+# ─────────────────────────────────────────────
+#  JOBS
+#  (single definition — this router used to be declared twice in this file;
+#  the second declaration silently shadowed this one at import time, so
+#  GET /jobs, pause/resume/run, and /jobs/logs were never actually mounted
+#  on the app. Merged into one router below.)
+# ─────────────────────────────────────────────
+jobs_router = APIRouter(prefix="/jobs", tags=["Jobs"])
+
+
+@jobs_router.get("", response_model=list[JobOut])
+async def list_jobs(db: AsyncSession = Depends(get_db)):
+    result = await db.execute(select(Job).order_by(Job.name))
+    return result.scalars().all()
+
+
+@jobs_router.post("/run_all", response_model=MessageResponse)
+async def run_all_jobs(background_tasks: BackgroundTasks, _user=Depends(get_current_user)):
+    """Triggers all active scrapers, classification, and insight synthesis immediately."""
+    from services.scheduler import run_all_tasks_now
+    background_tasks.add_task(run_all_tasks_now)
+    return {"message": "All background scrapers have been triggered manually."}
+
+
+@jobs_router.post("/{job_id}/pause", response_model=JobOut)
+async def pause_job(job_id: str, db: AsyncSession = Depends(get_db), _user=Depends(get_current_user)):
+    result = await db.execute(select(Job).where(Job.id == job_id))
+    job = result.scalar_one_or_none()
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    job.status = JobStatus.paused
+    await db.commit()
+    await db.refresh(job)
+    return job
+
+
+@jobs_router.post("/{job_id}/resume", response_model=JobOut)
+async def resume_job(job_id: str, db: AsyncSession = Depends(get_db)):
+    result = await db.execute(select(Job).where(Job.id == job_id))
+    job = result.scalar_one_or_none()
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    job.status = JobStatus.idle
+    await db.commit()
+    await db.refresh(job)
+    return job
+
+
+@jobs_router.post("/{job_id}/run", response_model=MessageResponse)
+async def run_job(job_id: str, background_tasks: BackgroundTasks, db: AsyncSession = Depends(get_db)):
+    """Dispatches to the actual job handler by name (previously a `pass` stub)."""
+    from services.scheduler import (
+        _run_job,
+        job_ingest_reddit,
+        job_ingest_hn,
+        job_ingest_google_trends,
+        job_ingest_x,
+        job_classify_unprocessed,
+        job_synthesize_insights,
+        job_recluster,
+        job_check_alerts,
+    )
+
+    handlers = {
+        "ingest_reddit": job_ingest_reddit,
+        "ingest_hackernews": job_ingest_hn,
+        "ingest_google_trends": job_ingest_google_trends,
+        "ingest_x": job_ingest_x,
+        "classify_unprocessed": job_classify_unprocessed,
+        "synthesize_insights": job_synthesize_insights,
+        "recluster": job_recluster,
+        "check_alerts": job_check_alerts,
+    }
+
+    result = await db.execute(select(Job).where(Job.id == job_id))
+    job = result.scalar_one_or_none()
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    handler = handlers.get(job.name)
+    if handler is None:
+        raise HTTPException(status_code=400, detail=f"No handler registered for job '{job.name}'")
+
+    background_tasks.add_task(_run_job, job.name, handler)
+    return {"message": f"Job '{job.name}' triggered manually"}
+
+
+@jobs_router.get("/logs", response_model=list[JobLogOut])
+async def job_logs(
+    job_id: Optional[str] = None,
+    limit: int = Query(50, ge=1, le=500),
+    db: AsyncSession = Depends(get_db),
+):
+    query = select(JobLog).order_by(JobLog.started_at.desc()).limit(limit)
+    if job_id:
+        query = query.where(JobLog.job_id == job_id)
+    result = await db.execute(query)
+    return result.scalars().all()
+
+
 # ─────────────────────────────────────────────
 #  ANALYTICS
 # ─────────────────────────────────────────────
@@ -255,7 +267,7 @@ async def summary_stats(db: AsyncSession = Depends(get_db)):
     total_trends = (await db.execute(select(func.count(Trend.id)))).scalar_one()
     total_pp = (await db.execute(select(func.count(PainPoint.id)))).scalar_one()
     total_sol = (await db.execute(select(func.count(Solution.id)))).scalar_one()
-    total_src = (await db.execute(select(func.count()).select_from(__import__('models').Source))).scalar_one()
+    total_src = (await db.execute(select(func.count()).select_from(Source))).scalar_one()
     items_24h = (await db.execute(
         select(func.count(FeedItem.id)).where(FeedItem.fetched_at >= since_24h)
     )).scalar_one()
@@ -272,7 +284,6 @@ async def summary_stats(db: AsyncSession = Depends(get_db)):
 
 @analytics_router.get("/sources")
 async def source_stats(db: AsyncSession = Depends(get_db)):
-    from models import Source
     since_24h = datetime.utcnow() - timedelta(hours=24)
     sources = (await db.execute(select(Source))).scalars().all()
     result = []
@@ -335,11 +346,18 @@ async def sentiment_over_time(days: int = Query(7, ge=1, le=90), db: AsyncSessio
 
 @analytics_router.get("/heatmap")
 async def activity_heatmap(db: AsyncSession = Depends(get_db)):
-    """Returns item counts grouped by day-of-week and hour."""
+    """
+    Returns item counts grouped by day-of-week and hour.
+
+    NOTE: this previously used func.strftime(...), which is SQLite-only and
+    would raise on the production Postgres DB. extract() is portable across
+    both dialects (and is what tests already run against via aiosqlite, since
+    SQLAlchemy's SQLite dialect compiles extract() down to strftime for you).
+    """
     result = await db.execute(
         select(
-            func.strftime("%w", FeedItem.fetched_at).label("dow"),
-            func.strftime("%H", FeedItem.fetched_at).label("hour"),
+            func.extract("dow", FeedItem.fetched_at).label("dow"),
+            func.extract("hour", FeedItem.fetched_at).label("hour"),
             func.count(FeedItem.id).label("count"),
         )
         .group_by("dow", "hour")
@@ -360,7 +378,6 @@ START_TIME = time.time()
 async def get_settings(db: AsyncSession = Depends(get_db)):
     result = await db.execute(select(AppSettings))
     rows = result.scalars().all()
-    # Mask API keys
     settings = {}
     for row in rows:
         val = row.value
@@ -401,17 +418,4 @@ async def health_check(db: AsyncSession = Depends(get_db)):
 
 @settings_router.get("/version")
 async def version():
-    return {"version": "1.0.0", "model": "claude-sonnet-4-20250514"}
-
-# ─────────────────────────────────────────────
-#  JOBS (Update this section)
-# ─────────────────────────────────────────────
-jobs_router = APIRouter(prefix="/jobs", tags=["Jobs"])
-
-@jobs_router.post("/run_all", response_model=MessageResponse)
-async def run_all_jobs(background_tasks: BackgroundTasks, db: AsyncSession = Depends(get_db), _user=Depends(get_current_user)):
-    """Triggers all active scrapers and classification jobs immediately."""
-    from services.scheduler import run_all_tasks_now 
-    
-    background_tasks.add_task(run_all_tasks_now)
-    return {"message": "All background scrapers have been triggered manually."}
+    return {"version": "1.0.0", "model": "groq"}

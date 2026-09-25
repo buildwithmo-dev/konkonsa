@@ -9,6 +9,7 @@ from sqlalchemy import select
 
 from database import AsyncSessionLocal
 from models import FeedItem, Source, SourceType
+from services.realtime import notify_new_items
 
 
 X_API_URL = "https://api.x.com/2/tweets/search/recent"
@@ -192,6 +193,9 @@ async def search_x(
                 if user.get("id")
             }
 
+            page_inserted = 0
+            page_inserted_ids: list[str] = []
+
             async with AsyncSessionLocal() as db:
                 external_ids = [
                     str(post["id"])
@@ -202,17 +206,15 @@ async def search_x(
                     db, source_id, external_ids
                 )
 
-                page_inserted = 0
                 for post in posts:
                     post_id = str(post.get("id", ""))
                     if not post_id or post_id in existing_ids:
                         continue
 
-                    db.add(
-                        FeedItem(
-                            **_build_feed_item(post, source_id, users_by_id)
-                        )
-                    )
+                    item = FeedItem(**_build_feed_item(post, source_id, users_by_id))
+                    db.add(item)
+                    await db.flush()  # populate item.id before commit
+                    page_inserted_ids.append(item.id)
                     page_inserted += 1
 
                 source_result = await db.execute(
@@ -227,6 +229,9 @@ async def search_x(
                     source.error_message = None
 
                 await db.commit()
+
+            if page_inserted_ids:
+                await notify_new_items(source_id, page_inserted_ids)
 
             inserted_total += page_inserted
             meta = payload.get("meta") or {}

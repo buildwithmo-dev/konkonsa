@@ -1,60 +1,43 @@
 from fastapi import APIRouter, Depends, HTTPException, WebSocket, WebSocketDisconnect, Query
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, delete
+from sqlalchemy import select
 from typing import Optional
-import asyncio, json
+import asyncio
 
 from database import get_db
 from models import FeedItem
 from schemas import FeedItemOut, MessageResponse
+from services.realtime import manager
 
 router = APIRouter(prefix="/feed", tags=["Feed"])
-
-# Simple in-memory connection manager for WebSocket clients
-class ConnectionManager:
-    def __init__(self):
-        self.active: list[WebSocket] = []
-
-    async def connect(self, ws: WebSocket):
-        await ws.accept()
-        self.active.append(ws)
-
-    def disconnect(self, ws: WebSocket):
-        self.active.remove(ws)
-
-    async def broadcast(self, data: dict):
-        for ws in self.active:
-            try:
-                await ws.send_json(data)
-            except Exception:
-                pass
-
-manager = ConnectionManager()
 
 
 @router.get("", response_model=list[FeedItemOut])
 async def list_feed(
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=100),
+    limit: Optional[int] = Query(
+        None, ge=1, le=200,
+        description="Alias for page_size — kept for frontend compatibility (lib/api.ts calls ?limit=50)",
+    ),
     source_id: Optional[str] = None,
     is_duplicate: Optional[bool] = None,
     db: AsyncSession = Depends(get_db),
 ):
+    effective_page_size = limit or page_size
     query = select(FeedItem).order_by(FeedItem.fetched_at.desc())
     if source_id:
         query = query.where(FeedItem.source_id == source_id)
     if is_duplicate is not None:
         query = query.where(FeedItem.is_duplicate == is_duplicate)
-    query = query.offset((page - 1) * page_size).limit(page_size)
+    query = query.offset((page - 1) * effective_page_size).limit(effective_page_size)
     result = await db.execute(query)
     return result.scalars().all()
 
 
 @router.get("/duplicates", response_model=list[FeedItemOut])
 async def list_duplicates(db: AsyncSession = Depends(get_db)):
-    result = await db.execute(
-        select(FeedItem).where(FeedItem.is_duplicate == True)
-    )
+    result = await db.execute(select(FeedItem).where(FeedItem.is_duplicate == True))
     return result.scalars().all()
 
 
@@ -81,19 +64,14 @@ async def delete_feed_item(item_id: str, db: AsyncSession = Depends(get_db)):
 @router.websocket("/ws/feed")
 async def websocket_feed(websocket: WebSocket):
     """
-    WebSocket endpoint — streams new feed items in real-time.
-    Connect and receive JSON payloads whenever new items are ingested.
+    Streams a message whenever any ingestion service (running on the worker
+    dyno) commits new FeedItems — see services/realtime.py for how that
+    crosses the process boundary via Postgres NOTIFY.
     """
     await manager.connect(websocket)
     try:
         while True:
-            # Keep connection alive; broadcasting is triggered by ingestion service
             await asyncio.sleep(30)
             await websocket.send_json({"type": "ping"})
     except WebSocketDisconnect:
         manager.disconnect(websocket)
-
-
-# Utility: call this from the ingestion service to push new items to WS clients
-async def broadcast_new_item(item: dict):
-    await manager.broadcast({"type": "new_item", "data": item})

@@ -86,3 +86,14 @@ async def check_db():
     """Verify that the database connection is working."""
     async with engine.connect() as conn:
         await conn.execute(text("SELECT 1"))
+
+def raw_postgres_dsn() -> str | None:
+    """
+    Plain postgres:// DSN (no SQLAlchemy driver suffix) for direct asyncpg use
+    — e.g. LISTEN/NOTIFY, which the SQLAlchemy async engine doesn't expose.
+    Returns None when running on SQLite (local dev / pytest), so callers can
+    degrade to a no-op instead of crashing.
+    """
+    if DATABASE_URL.startswith("postgresql+asyncpg://"):
+        return DATABASE_URL.replace("postgresql+asyncpg://", "postgresql://", 1)
+    return None
