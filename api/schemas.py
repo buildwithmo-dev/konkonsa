@@ -105,8 +105,8 @@ class PainPointOut(BaseModel):
     description: Optional[str]
     audience: Optional[str]
     severity: float
-    frequency: int
-    keywords: list[str]
+    frequency: int | None = None
+    keywords: list[str] = Field(default_factory=list)
     is_dismissed: bool
     created_at: datetime
     model_config = {"from_attributes": True}
