@@ -23,7 +23,7 @@ import logging
 
 from fastapi import WebSocket
 
-from database import raw_postgres_dsn
+from database import engine, raw_postgres_dsn
 
 log = logging.getLogger("realtime")
 
@@ -70,13 +70,18 @@ async def notify_new_items(source_id: str, feed_item_ids: list[str]) -> None:
         return  # local SQLite dev/tests — nothing to notify
 
     try:
-        import asyncpg
-        conn = await asyncpg.connect(dsn)
-        try:
-            payload = json.dumps({"source_id": source_id, "feed_item_ids": feed_item_ids[:50]})
-            await conn.execute("SELECT pg_notify($1, $2)", NOTIFY_CHANNEL, payload)
-        finally:
-            await conn.close()
+        # Reuse the application's bounded SQLAlchemy pool instead of creating
+        # a second, unbounded client connection for every notification.
+        # Parameterized SELECT pg_notify(...) works on PostgreSQL and keeps
+        # LISTEN/NOTIFY isolated to this short-lived operation.
+        from sqlalchemy import text
+
+        payload = json.dumps({"source_id": source_id, "feed_item_ids": feed_item_ids[:50]})
+        async with engine.begin() as conn:
+            await conn.execute(
+                text("SELECT pg_notify(:channel, :payload)"),
+                {"channel": NOTIFY_CHANNEL, "payload": payload},
+            )
     except Exception as e:
         # Real-time is a nice-to-have; never let a notify failure break ingestion.
         log.warning("notify_new_items failed: %s", e)
