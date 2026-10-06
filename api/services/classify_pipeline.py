@@ -1,7 +1,7 @@
 # api/services/classify_pipeline.py
 import asyncio
-from sqlalchemy import select
-
+import os
+from sqlalchemy import select, or_
 from database import AsyncSessionLocal
 from models import FeedItem, Classification, ItemType
 from services.llm import call_llm   # was: `from groq_client import call_llm` — that module doesn't exist
@@ -26,7 +26,7 @@ Return this exact JSON structure with no extra text:
 
 MAX_CONCURRENT = 5
 BATCH_SIZE = 50
-
+MIN_RELEVANCE = float(os.getenv("CLASSIFY_MIN_RELEVANCE", "0"))
 
 async def classify_single_item(item: FeedItem, db) -> Classification:
     """Classify one FeedItem via Groq and save the result."""
@@ -62,14 +62,14 @@ async def classify_single_item(item: FeedItem, db) -> Classification:
 
 async def classify_pending_items(batch_size: int = BATCH_SIZE) -> dict:
     """Find all FeedItems without a Classification and classify them."""
-    async with AsyncSessionLocal() as db:
-        result = await db.execute(
-            select(FeedItem)
-            .outerjoin(Classification)
-            .where(Classification.id == None)
-            .limit(batch_size)
-        )
-        items = result.scalars().all()
+   async with AsyncSessionLocal() as db:
+        query = select(FeedItem).outerjoin(Classification).where(Classification.id == None)
+        if MIN_RELEVANCE > 0:
+            # NULL = not scored yet (X / Google Trends / HN writers), so still classify those.
+            query = query.where(or_(FeedItem.relevance_score.is_(None),
+                                    FeedItem.relevance_score >= MIN_RELEVANCE))
+    
+    items = (await db.execute(query.limit(batch_size))).scalars().all()
 
     if not items:
         return {"processed": 0, "failed": 0}

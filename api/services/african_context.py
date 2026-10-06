@@ -12,12 +12,15 @@ from dataclasses import dataclass
 
 MIN_SCORE = float(os.getenv("AFRICA_MIN_SCORE", "0.4"))
 
+AFRICAN_LANGS: dict[str, list[str]] = {   # language code -> countries it weakly implies
+    "sw": [], "so": [], "am": ["ET"], "ha": ["NG"], "yo": ["NG"], "zu": ["ZA"], "xh": ["ZA"], "af": ["ZA"],
+}
 # places: matched lowercase | codes: ISO currency codes, matched case-sensitively
 # words: currency names/symbols | terms: local slang, institutions, brands
 COUNTRIES: dict[str, dict] = {
     "NG": {"name": "Nigeria", "places": ["nigeria", "lagos", "abuja", "port harcourt", "ibadan", "kano", "naija"],
            "codes": ["NGN"], "words": ["naira", "₦"],
-           "terms": ["wahala", "abeg", "danfo", "okada", "cbn", "paystack", "flutterwave"]},
+           "terms": ["wahala", "wetin", "oga", "abeg", "danfo", "okada", "cbn", "paystack", "flutterwave"]},
     "GH": {"name": "Ghana", "places": ["ghana", "accra", "kumasi", "tema", "takoradi", "tamale", "cape coast"],
            "codes": ["GHS"], "words": ["cedi", "cedis", "₵"],
            "terms": ["chale", "trotro", "tro tro", "dumsor", "momo", "bank of ghana"]},
@@ -136,6 +139,12 @@ def analyze(text: str | None, hint: str | None = None, min_score: float | None =
         score += 0.4
         signals["pan_african"] = True
 
+    if lang and lang[0] in AFRICAN_LANGS and lang[1] >= 0.7:
+        score += 0.4
+        signals["lang"] = lang[0]
+        for c in AFRICAN_LANGS[lang[0]]:
+            votes[c] += 1
+            
     countries = [c for c, _ in votes.most_common()]
     score = round(min(score, 1.0), 2)
     return ContextResult(

@@ -3,7 +3,7 @@ services:
     name: konkonsa-api
     runtime: python
     buildCommand: pip install -r api/requirements.txt
-    startCommand: cd api && uvicorn main:app --host 0.0.0.0 --port $PORT
+    startCommand: startCommand: cd api && uvicorn main:app --host 0.0.0.0 --port $PORT --proxy-headers --forwarded-allow-ips='*'
     healthCheckPath: /healthz
     envVars:
       - key: DATABASE_URL
@@ -47,7 +47,7 @@ services:
     name: konkonsa-worker
     runtime: python
     buildCommand: pip install -r api/requirements.txt
-    startCommand: cd api && alembic upgrade head && python worker.py
+    startCommand: startCommand: cd api && uvicorn main:app --host 0.0.0.0 --port $PORT --proxy-headers --forwarded-allow-ips='*'
     envVars:
       - key: DATABASE_URL
         sync: false
@@ -86,7 +86,7 @@ services:
     name: konkonsa-listeners
     runtime: python
     buildCommand: pip install -r api/requirements.txt
-    startCommand: cd api && python listeners_worker.py
+    startCommand: startCommand: cd api && uvicorn main:app --host 0.0.0.0 --port $PORT --proxy-headers --forwarded-allow-ips='*'
     envVars:
       - key: DATABASE_URL
         sync: false

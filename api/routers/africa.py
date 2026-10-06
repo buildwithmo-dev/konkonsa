@@ -10,8 +10,19 @@ from models import FeedItem
 from schemas import AfricaCountryStat, FeedItemOut
 from services.african_context import COUNTRIES, MIN_SCORE
 
+import os
+from services.rate_limit import rate_limiter
+
 router = APIRouter(prefix="/africa", tags=["Africa"])
 
+AFRICA_RATE_LIMIT = int(os.getenv("AFRICA_RATE_LIMIT", "120"))
+AFRICA_RATE_WINDOW_SECONDS = int(os.getenv("AFRICA_RATE_WINDOW_SECONDS", "60"))
+
+router = APIRouter(
+    prefix="/africa",
+    tags=["Africa"],
+    dependencies=[Depends(rate_limiter("africa_read", limit=AFRICA_RATE_LIMIT, window_seconds=AFRICA_RATE_WINDOW_SECONDS))],
+)
 
 @router.get("/summary")
 async def africa_summary(hours: int = Query(24, ge=1, le=720), db: AsyncSession = Depends(get_db)):

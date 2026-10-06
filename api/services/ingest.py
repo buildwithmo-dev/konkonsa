@@ -17,6 +17,7 @@ from database import AsyncSessionLocal
 from models import FeedItem, Source, SourceType
 from services.african_context import analyze
 from services.realtime import notify_new_items
+from services.language import detect_language
 
 log = logging.getLogger("ingest")
 
@@ -75,6 +76,9 @@ async def persist_items(source_id: str, items: list[dict], *, africa_only: bool 
         item["countries"] = ctx.countries
         item["raw_data"] = {**(item.get("raw_data") or {}), "african_context": ctx.signals}
         prepared.append(item)
+
+    text = f"{item.get('title') or ''}\n{item.get('body') or ''}"
+    ctx = analyze(text, hint=hint, lang=detect_language(text))
 
     inserted_ids: list[str] = []
     async with AsyncSessionLocal() as db:
