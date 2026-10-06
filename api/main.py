@@ -20,6 +20,7 @@ from routers.misc import (
     analytics_router,
     settings_router,
 )
+from routers.africa import router as africa_router
 
 
 @asynccontextmanager
@@ -62,7 +63,7 @@ app.include_router(classify_router)
 app.include_router(trends_router)
 app.include_router(painpoints_router)
 app.include_router(solutions_router)
-
+app.include_router(africa_router)
 app.include_router(search_router)
 app.include_router(clusters_router)
 app.include_router(alerts_router)

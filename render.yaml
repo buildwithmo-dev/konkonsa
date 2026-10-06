@@ -81,3 +81,26 @@ services:
         value: "30"
       - key: DB_POOL_RECYCLE
         value: "1800"
+
+  - type: worker
+    name: konkonsa-listeners
+    runtime: python
+    buildCommand: pip install -r api/requirements.txt
+    startCommand: cd api && python listeners_worker.py
+    envVars:
+      - key: DATABASE_URL
+        sync: false
+      - key: DISCORD_BOT_TOKEN
+        sync: false
+      - key: TELEGRAM_API_ID
+        sync: false
+      - key: TELEGRAM_API_HASH
+        sync: false
+      - key: TELEGRAM_SESSION
+        sync: false
+      - key: AUTHOR_HASH_SALT
+        sync: false
+      - key: DB_POOL_SIZE
+        value: "3"
+      - key: DB_MAX_OVERFLOW
+        value: "0"

@@ -23,6 +23,8 @@ class SourceType(str, enum.Enum):
     twitter = "twitter"
     bluesky = "bluesky"
     rss = "rss"
+    discord = "discord"      # new
+    telegram = "telegram"
 
 
 class ItemType(str, enum.Enum):
@@ -78,6 +80,7 @@ class FeedItem(Base):
         UniqueConstraint("source_id", "external_id", name="uq_feed_items_source_external"),
         Index("ix_feed_items_source_fetched", "source_id", "fetched_at"),
         Index("ix_feed_items_external_id", "external_id"),
+        Index("ix_feed_items_country_fetched", "primary_country", "fetched_at"),
     )
 
     id = Column(String, primary_key=True, default=gen_uuid)
@@ -92,7 +95,9 @@ class FeedItem(Base):
     raw_data = Column(JSON, default=dict)
     is_duplicate = Column(Boolean, default=False)
     fetched_at = Column(DateTime, server_default=func.now())
-
+    relevance_score = Column(Float, nullable=True)       # 0-1 African-context confidence
+    primary_country = Column(String(2), nullable=True)   # ISO alpha-2
+    countries = Column(JSON, default=list)
     source = relationship("Source", back_populates="feed_items")
     classification = relationship("Classification", back_populates="feed_item", uselist=False)
 

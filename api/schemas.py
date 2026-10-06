@@ -47,7 +47,23 @@ class FeedItemOut(BaseModel):
     comment_count: int
     is_duplicate: bool
     fetched_at: datetime
+    relevance_score: Optional[float] = None
+    primary_country: Optional[str] = None
+    countries: list[str] = Field(default_factory=list)
     model_config = {"from_attributes": True}
+
+    @field_validator("countries", mode="before")
+    @classmethod
+    def _countries_list(cls, v):
+        return [] if v is None else v
+
+
+class AfricaCountryStat(BaseModel):
+    code: str
+    name: str
+    items: int
+    avg_relevance: float
+    engagement: int
 
 
 # ---------- Classification ----------
